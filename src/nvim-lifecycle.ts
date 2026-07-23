@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { NeovimClient } from "./neovim-client";
 import { NvimServer, NvimCommand } from "./nvim-server";
-import { readFileSync, existsSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { resolve } from "node:path";
 
@@ -85,17 +85,21 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
       };
     }
 
-    // 4. Inject Lua support module
-    const luaPath = resolve(__dirname, "..", "lua", "pi-nvim.lua");
-    if (!existsSync(luaPath)) {
+    // 4. Inject Lua support module via require()
+    //    We can't execLua the raw source because it returns a function table
+    //    that msgpack can't serialize. Instead, add the lua dir to
+    //    package.path and require() the module with an explicit return nil.
+    const luaDir = resolve(__dirname, "..", "lua");
+    if (!existsSync(resolve(luaDir, "pi-nvim.lua"))) {
       return {
-        content: [{ type: "text", text: `Lua module not found at ${luaPath}` }],
+        content: [{ type: "text", text: `Lua module not found at ${luaDir}/pi-nvim.lua` }],
         details: { status: "error" },
       };
     }
-    const luaSource = readFileSync(luaPath, "utf-8");
     try {
-      await client.execLua(luaSource);
+      const escaped = luaDir.replace(/\\/g, "\\\\");
+      await client.execLua(`package.path = package.path .. ";${escaped}/?.lua;${escaped}/?/init.lua"`);
+      await client.execLua(`require("pi-nvim"); return nil`);
     } catch (err: any) {
       return {
         content: [{ type: "text", text: `Failed to inject Lua module: ${err.message || err}` }],
@@ -103,8 +107,13 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
       };
     }
 
-    // 5. Call the Lua setup function with the back-socket path
+    // 5. Start the reverse-command server FIRST so the socket exists
+    //    when the Lua module's setup() tries to connect.
     const backSocket = nvimBackSocketPath();
+    server = new NvimServer(backSocket);
+    await server.start(handleNvimCommand);
+
+    // 6. Now call setup — the socket is ready for connection
     try {
       await client.execLua(
         `return require("pi-nvim").setup({ socket_path = "${backSocket}", pi_pid = ${PID} })`,
@@ -115,10 +124,6 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
         details: { status: "error", error: String(err) },
       };
     }
-
-    // 6. Start the reverse-command server
-    server = new NvimServer(backSocket);
-    await server.start(handleNvimCommand);
 
     // 7. Open requested files
     if (params.files && params.files.length > 0) {
