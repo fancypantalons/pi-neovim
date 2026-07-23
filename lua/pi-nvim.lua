@@ -115,8 +115,9 @@ local function setup_quickfix_mappings()
         vim.cmd("vert diffsplit " .. vim.fn.fnameescape(filepath))
         vim.cmd("diffthis")
 
-        -- Left side: read git HEAD version into a scratch buffer
+        -- Left side: fresh scratch buffer for HEAD content
         vim.cmd("wincmd h")
+        vim.cmd("enew!")  -- fresh buffer, avoids buffer-sharing with right side
         local head_content = vim.fn.systemlist(
           "git -C " .. vim.fn.shellescape(dir) .. " show HEAD:" .. relpath .. " 2>/dev/null"
         )
@@ -124,6 +125,9 @@ local function setup_quickfix_mappings()
           vim.api.nvim_buf_set_lines(0, 0, -1, false, head_content)
           vim.bo.modified = false
           vim.bo.buftype = "nofile"
+          vim.cmd("diffthis")
+        else
+          -- git show failed; fall back to diff against empty buffer
           vim.cmd("diffthis")
         end
       else
