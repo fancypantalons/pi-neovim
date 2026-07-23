@@ -126,10 +126,12 @@ async function main() {
     // Call setup with a fake socket path — the connect will fail
     // but it should not crash nvim
     const result = await client.execLua(`
-      local ok, err = pcall(pi_nvim.setup, pi_nvim, {
-        socket_path = "/tmp/nonexistent.sock",
-        pi_pid = 99999
-      })
+      local ok, err = pcall(function()
+        pi_nvim.setup({
+          socket_path = "/tmp/nonexistent.sock",
+          pi_pid = 99999
+        })
+      end)
       return { ok = ok, err = err }
     `);
     console.log(`✅ setup() pcall = ${JSON.stringify(result)}`);

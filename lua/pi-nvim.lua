@@ -28,7 +28,7 @@ local function connect_socket()
   if connected then
     return
   end
-  sock = vim.loop.new_tcp()
+  sock = vim.loop.new_pipe()
   sock:connect(socket_path, function(err)
     if err then
       vim.schedule(function()
