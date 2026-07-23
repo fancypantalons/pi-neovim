@@ -106,7 +106,8 @@ export class NeovimClient {
   }
 
   /**
-   * Set the quickfix list.
+   * Set the quickfix list. Uses JSON-in-Lua to avoid msgpack table
+   * serialization issues across the RPC boundary.
    */
   async setQuickfixList(
     entries: Array<{
@@ -117,7 +118,14 @@ export class NeovimClient {
     }>,
     title: string = "pi-neovim modified files",
   ): Promise<void> {
-    await this.call("nvim_setqflist", {}, "r", title, entries);
+    // Embed JSON via Lua [==[...]==] so that the JSON's closing ]
+    // doesn't get consumed by the Lua string closer.
+    const json = JSON.stringify(entries);
+    await this.execLua(`
+      local entries = vim.fn.json_decode([==[${json}]==])
+      vim.fn.setqflist({}, "r", { title = [==[${title}]==], items = entries })
+      return nil
+    `);
   }
 
   /**
