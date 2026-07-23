@@ -241,14 +241,10 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
         const summary = e.added !== undefined
           ? `User saved ${e.file} (+${e.added}/-${e.removed} lines)`
           : `User saved ${e.file}`;
-        pi.sendMessage({
-          customType: "nvim-edit",
-          content: summary,
-          display: true,
-          details: { file: e.file, diff: e.diff },
-        }, { deliverAs: "nextTurn" }).catch((err: Error) => {
-          console.error("[pi-nvim] sendMessage failed:", err.message);
-        });
+        pi.sendUserMessage(
+          `[neovim] ${summary}\n\`\`\`diff\n${e.diff}\n\`\`\``,
+          { deliverAs: "followUp" },
+        );
         break;
       }
       case "pi_select": {
