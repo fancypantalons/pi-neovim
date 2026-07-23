@@ -260,7 +260,12 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
           ? ` (lines ${s.line_start}-${s.line_end})`
           : "";
         const selectionBlock = `Selection from ${s.file}${lineRange}:\n\`\`\`\n${s.lines}\n\`\`\``;
-        const prompt = (s.prompt || "Look at this selection").trim();
+        const prompt = (s.prompt || "").trim();
+        if (prompt === "") {
+          // No prompt from user; selection only.
+          pi.sendUserMessage(`${selectionBlock}`, { deliverAs: "followUp" });
+          break;
+        }
         pi.sendUserMessage(`${prompt}\n\n${selectionBlock}`, { deliverAs: "followUp" });
         break;
       }

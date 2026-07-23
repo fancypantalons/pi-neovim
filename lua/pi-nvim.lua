@@ -258,7 +258,6 @@ function M.setup(opts)
     -- Ask the user for the prompt to send along with the selection
     vim.ui.input({
       prompt = "Prompt to send with selection: ",
-      default = "Look at this selection",
     }, function(input)
       if input == nil or input == "" then
         return  -- user cancelled
