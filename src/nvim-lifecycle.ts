@@ -241,12 +241,13 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
         const summary = e.added !== undefined
           ? `User saved ${e.file} (+${e.added}/-${e.removed} lines)`
           : `User saved ${e.file}`;
+        console.log("[pi-nvim] pi_edit:", summary);
         pi.sendMessage({
           customType: "nvim-edit",
           content: summary,
           display: true,
           details: { file: e.file, diff: e.diff },
-        });
+        }, { deliverAs: "nextTurn" });
         break;
       }
       case "pi_select": {
