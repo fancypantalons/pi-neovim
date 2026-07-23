@@ -6,7 +6,7 @@
   "license": "MIT",
   "pi": {
     "extensions": ["./src/index.ts"],
-    "skills": ["./skills"]
+    "skills": ["./skills/pi-nvim"]
   },
   "dependencies": {
     "@msgpack/msgpack": "^3.1.0"

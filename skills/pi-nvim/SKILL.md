@@ -1,3 +1,8 @@
+---
+name: pi-nvim
+description: Neovim integration for pi.dev — open files, browse agent-modified files in a quickfix list, side-by-side git diffs, and two-way editing. Use when the user wants to see code in a full editor, review your changes, or interact with code through Neovim.
+---
+
 # pi-neovim
 
 Use this skill when you want to show the user code in a full editor or when the user wants to inspect files you've modified.
