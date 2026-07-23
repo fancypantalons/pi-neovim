@@ -1,12 +1,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { getLifecycle } from "./nvim-lifecycle";
-import { getFileTracker } from "./file-tracker";
+import { createNvimLifecycle } from "./nvim-lifecycle";
+import { createFileTracker } from "./file-tracker";
 
+// NOTE: The factory is re-invoked on /resume, /new, /fork, and /reload, each
+// time with a fresh `pi` bound to the new session. We create lifecycle and
+// fileTracker per call so stale `pi` references never escape (the error
+// "This extension ctx is stale after session replacement or reload" comes
+// from a captured `pi` surviving past a session switch).
 export default function (pi: ExtensionAPI) {
   // ── State ──────────────────────────────────────────────────────────
-  const lifecycle = getLifecycle(pi);
-  const fileTracker = getFileTracker(lifecycle);
+  const lifecycle = createNvimLifecycle(pi);
+  const fileTracker = createFileTracker(lifecycle);
 
   // Wire up quickfix refresh handler so Neovim's :PiQuickfix works
   lifecycle.setQuickfixRefreshHandler(() => {

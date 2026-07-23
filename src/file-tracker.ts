@@ -119,14 +119,6 @@ export function createFileTracker(
   };
 }
 
-// Singleton holder (set by getFileTracker in index.ts)
-let instance: ReturnType<typeof createFileTracker> | null = null;
-
-export function getFileTracker(
-  lifecycle: { isReady(): boolean; pushQuickfix(entries: any[]): Promise<void>; reloadFile(filepath: string): Promise<void> }
-) {
-  if (!instance) {
-    instance = createFileTracker(lifecycle);
-  }
-  return instance;
-}
+// NOTE: No module-level singleton. The extension factory is re-invoked on
+// /resume, /new, /fork, and /reload. Create a fresh file tracker per
+// factory invocation so it always references the current lifecycle.

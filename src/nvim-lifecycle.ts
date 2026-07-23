@@ -299,12 +299,8 @@ function waitForSocket(path: string, timeoutMs: number): Promise<void> {
   });
 }
 
-// Singleton
-let lifecycleInstance: ReturnType<typeof createNvimLifecycle> | null = null;
-
-export function getLifecycle(pi: ExtensionAPI) {
-  if (!lifecycleInstance) {
-    lifecycleInstance = createNvimLifecycle(pi);
-  }
-  return lifecycleInstance;
-}
+// NOTE: No module-level singleton. The extension factory is re-invoked on
+// /resume, /new, /fork, and /reload, each time with a fresh `pi` bound to
+// the new session. A cached instance would hold a stale `pi` and throw when
+// Neovim sends commands ("This extension ctx is stale after session
+// replacement or reload"). Create a fresh lifecycle per factory invocation.
