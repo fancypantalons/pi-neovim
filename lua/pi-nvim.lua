@@ -13,14 +13,30 @@ local connected = false
 --- Send a JSON-line command over the socket to pi.
 --- @param cmd table Command object with a "cmd" field
 local function send_cmd(cmd)
-  if not sock or sock:is_closing() then
+  if not sock or sock:is_closing() or not connected then
+    vim.schedule(function()
+      local msg = "pi-nvim: cannot send — "
+      if not sock then msg = msg .. "no socket"
+      elseif sock:is_closing() then msg = msg .. "socket closing"
+      elseif not connected then msg = msg .. "not connected" end
+      vim.notify(msg, vim.log.levels.WARN)
+    end)
     return
   end
   local ok, json = pcall(vim.fn.json_encode, cmd)
   if not ok then
+    vim.schedule(function()
+      vim.notify("pi-nvim: json encode failed", vim.log.levels.ERROR)
+    end)
     return
   end
-  sock:write(json .. "\n")
+  sock:write(json .. "\n", function(err)
+    if err then
+      vim.schedule(function()
+        vim.notify("pi-nvim: write failed: " .. tostring(err), vim.log.levels.ERROR)
+      end)
+    end
+  end)
 end
 
 --- Connect to pi's Unix socket server.
@@ -246,6 +262,17 @@ function M.setup(opts)
     -- Triggers pi to re-push the quickfix list
     send_cmd({ cmd = "pi_open_file", file = "__pi_quickfix_refresh__" })
   end, { desc = "Request quickfix refresh from pi.dev" })
+
+  vim.api.nvim_create_user_command("PiStatus", function()
+    local info = {
+      "pi-nvim status:",
+      "  connected: " .. tostring(connected),
+      "  socket_path: " .. tostring(socket_path),
+      "  pi_pid: " .. tostring(pi_pid),
+      "  sock_active: " .. tostring(sock ~= nil and not sock:is_closing()),
+    }
+    vim.notify(table.concat(info, "\n"), vim.log.levels.INFO)
+  end, { desc = "Show pi-nvim connection status" })
 end
 
 --- Send a command to pi. Useful for other Lua code to call.
