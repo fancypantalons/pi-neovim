@@ -271,6 +271,47 @@ async function main() {
   `);
   assert("BufWinEnter autocmd registered", hasBufWin === true);
 
+  // ─── Phase 9: Test reloadFile ───────────────────────────────────
+  console.log("── Phase 9: Test reloadFile ──");
+
+  // Create the file on disk first, then open it properly
+  require("fs").writeFileSync("/tmp/pi-nvim-reload-test.txt", "old content");
+
+  await client.execLua(`
+    vim.cmd("e! /tmp/pi-nvim-reload-test.txt")
+    return nil
+  `);
+
+  // Verify initial buffer content
+  const before = await client.execLua(`
+    return vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  `);
+  assert("initial content loaded", Array.isArray(before) && before[0] === "old content",
+    `got: ${JSON.stringify(before)}`);
+
+  // Write new content to the file on disk (simulating pi editing)
+  require("fs").writeFileSync("/tmp/pi-nvim-reload-test.txt", "new content from pi");
+
+  // Call reloadFile — the buffer should pick up the new content
+  await client.reloadFile("/tmp/pi-nvim-reload-test.txt");
+
+  const after = await client.execLua(`
+    local bufs = vim.api.nvim_list_bufs()
+    for _, buf in ipairs(bufs) do
+      if vim.api.nvim_buf_get_name(buf) == "/tmp/pi-nvim-reload-test.txt" then
+        return vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+      end
+    end
+    return nil
+  `);
+
+  const lines = Array.isArray(after) ? after : [];
+  assert("reloadFile picks up new content", lines[0] === "new content from pi",
+    `got: ${JSON.stringify(lines)}`);
+
+  // Cleanup
+  try { require("fs").unlinkSync("/tmp/pi-nvim-reload-test.txt"); } catch { /* ok */ }
+
   // ─── Results ────────────────────────────────────────────────────────
   console.log(`\n── Results: ${passed} passed, ${failed} failed ──`);
 

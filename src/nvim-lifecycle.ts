@@ -243,9 +243,15 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
     }
   }
 
+  async function reloadFile(filepath: string): Promise<void> {
+    if (!client?.isConnected) return;
+    await client.reloadFile(filepath);
+  }
+
   return {
     open,
     pushQuickfix,
+    reloadFile,
     shutdown,
     handleDisconnect,
     isReady,

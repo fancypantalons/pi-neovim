@@ -11,7 +11,11 @@ export interface TrackedFile {
  * Maintains a deduplicated list and can push it as a Neovim quickfix list.
  */
 export function createFileTracker(
-  lifecycle: { isReady(): boolean; pushQuickfix(entries: QuickfixEntry[]): Promise<void> }
+  lifecycle: {
+    isReady(): boolean;
+    pushQuickfix(entries: QuickfixEntry[]): Promise<void>;
+    reloadFile(filepath: string): Promise<void>;
+  }
 ) {
   const files = new Map<string, TrackedFile>();
 
@@ -80,11 +84,16 @@ export function createFileTracker(
    * Called when a write/edit tool result is received.
    * Confirms the file was actually written and pushes the quickfix.
    */
-  function onToolResult(toolName: string, _event: ToolResultEvent) {
-    // Push the updated list to Neovim if connected
-    pushToNeovim().catch(() => {
-      /* Neovim may not be open — that's fine */
-    });
+  function onToolResult(toolName: string, event: ToolResultEvent) {
+    // Push the updated quickfix list to Neovim if connected
+    pushToNeovim().catch(() => {});
+
+    // If a file was written/edited, force Neovim to reload it
+    // so the user sees the latest content immediately.
+    const input = event.input as { path?: string } | undefined;
+    if (input?.path) {
+      lifecycle.reloadFile(input.path).catch(() => {});
+    }
   }
 
   function addFile(path: string, toolName: string, timestamp: number) {
@@ -114,7 +123,7 @@ export function createFileTracker(
 let instance: ReturnType<typeof createFileTracker> | null = null;
 
 export function getFileTracker(
-  lifecycle: { isReady(): boolean; pushQuickfix(entries: any[]): Promise<void> }
+  lifecycle: { isReady(): boolean; pushQuickfix(entries: any[]): Promise<void>; reloadFile(filepath: string): Promise<void> }
 ) {
   if (!instance) {
     instance = createFileTracker(lifecycle);

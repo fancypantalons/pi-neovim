@@ -143,6 +143,30 @@ export class NeovimClient {
   }
 
   /**
+   * Force-reload a file in all buffers that have it open, but only if
+   * the buffer has no unsaved changes (respects user's edits).
+   */
+  async reloadFile(filepath: string): Promise<void> {
+    await this.execLua(`
+      local target = [==[${filepath}]==]
+      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_is_valid(buf) then
+          local name = vim.api.nvim_buf_get_name(buf)
+          if name == target then
+            local modified = vim.api.nvim_get_option_value("modified", { buf = buf })
+            if not modified then
+              vim.api.nvim_buf_call(buf, function()
+                vim.cmd("edit!")
+              end)
+            end
+          end
+        end
+      end
+      return nil
+    `);
+  }
+
+  /**
    * Close the connection.
    */
   disconnect(): void {
