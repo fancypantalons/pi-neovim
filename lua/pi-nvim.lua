@@ -106,6 +106,18 @@ local function setup_quickfix_mappings()
         return
       end
 
+      -- Find a non-quickfix window to operate in 
+      local target_win = nil
+      for _, win in ipairs(vim.api.nvim_list_wins()) do
+        local buf = vim.api.nvim_win_get_buf(win)
+        if vim.bo[buf].buftype ~= "quickfix" then
+          target_win = win
+          break
+        end
+      end
+      if not target_win then return end
+      vim.api.nvim_set_current_win(target_win)
+
       -- Open the file in a vertical diff split
       local ft = vim.filetype.match({ filename = filepath })
       local in_git = vim.fn.systemlist(
