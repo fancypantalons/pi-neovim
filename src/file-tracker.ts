@@ -41,15 +41,23 @@ export function createFileTracker(
   }
 
   /**
-   * Scan session entries for pre-existing write/edit operations.
+   * Scan session messages for pre-existing write/edit operations.
    * Called on session_start to rebuild state from session history.
+   *
+   * NOTE: Session entries are message-level. Tool calls live inside
+   * assistant message content blocks. This scans the content blocks
+   * for write/edit tool calls to pre-populate the tracker.
    */
-  function scanSession(entries: Array<{ type?: string; toolName?: string; input?: unknown; timestamp?: number }>) {
+  function scanSession(entries: Array<{ message?: { role?: string; content?: Array<{ type?: string; name?: string; input?: unknown }> } }>) {
     for (const entry of entries) {
-      if (entry.toolName === "write" || entry.toolName === "edit") {
-        const input = entry.input as { path?: string } | undefined;
-        if (input?.path) {
-          addFile(input.path, entry.toolName, entry.timestamp || Date.now());
+      const msg = entry.message;
+      if (!msg || msg.role !== "assistant") continue;
+      for (const block of msg.content || []) {
+        if (block.type === "toolCall" && (block.name === "write" || block.name === "edit")) {
+          const input = block.input as { path?: string } | undefined;
+          if (input?.path) {
+            addFile(input.path, block.name, Date.now());
+          }
         }
       }
     }

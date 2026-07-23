@@ -89,7 +89,8 @@ export default function (pi: ExtensionAPI) {
 
   // ── Event hooks ────────────────────────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
-    fileTracker.scanSession(ctx.sessionManager.getEntries() as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fileTracker.scanSession((ctx.sessionManager as any).getEntries() ?? []);
   });
 
   pi.on("tool_call", async (event) => {
