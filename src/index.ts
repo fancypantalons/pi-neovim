@@ -106,20 +106,6 @@ export default function (pi: ExtensionAPI) {
     fileTracker.scanSession((ctx.sessionManager as any).getEntries() ?? []);
   });
 
-  // Inject pending Neovim edits by transforming the user's input.
-  // Using the 'input' event avoids the stale-pi problem and doesn't
-  // touch the system prompt.
-  pi.on("input", async (event) => {
-    const edits = lifecycle.drainPendingEdits();
-    if (edits.length > 0) {
-      const block = edits.join("\n\n");
-      return {
-        action: "transform",
-        text: block + "\n\n" + event.text,
-      };
-    }
-  });
-
   pi.on("tool_call", async (event) => {
     if (event.toolName === "write" || event.toolName === "edit") {
       fileTracker.onToolCall(event.toolName, event.input as any);
