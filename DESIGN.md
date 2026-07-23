@@ -33,7 +33,7 @@ A pi.dev extension that integrates Neovim into the coding workflow via tmux. Whe
 | **Communication** | Dual-channel msgpack + JSON | pi→nvim uses msgpack-RPC (Neovim's native protocol). nvim→pi uses a Unix socket server in the extension (JSON protocol). |
 | **Editing** | Full two-way with auto-diff | User edits in Neovim are diffed automatically and reported to pi. Pi can incorporate user changes into its model of the codebase. |
 | **Quickfix** | Auto-updating modified files | Tracks `write`/`edit` tool calls. Quickfix list pushes to Neovim on every change. Pre-populated from session history at startup. |
-| **Tmux** | Assumed, user-managed panes | Extension assumes it runs inside tmux. User prepares the right pane; the tool opens Neovim there. |
+| **Tmux** | Assumed, extension-managed panes | Extension assumes it runs inside tmux. The tool calls `tmux split-window -h` to create the right pane, then launches Neovim in it. Closes the pane on `session_shutdown`. |
 | **Distribution** | npm pi-package, git-installed | `pi install git:github.com/user/pi-neovim`. Self-contained with runtime deps in `package.json`. |
 
 ## Package Structure
@@ -61,8 +61,10 @@ pi-neovim/
 Registers:
 - **Tool: `open_in_nvim`** — The model calls this to open Neovim in the right tmux pane.
   - Idempotent: if Neovim is already connected, returns existing status.
+  - If previously disconnected (user closed, crashed), spawns a fresh instance with full re-initialization.
   - Parameters: optional `files` array to open initially, optional `focus` boolean.
-  - Execute: spawns Neovim via tmux, establishes connections, returns summary.
+  - Execute: checks state, spawns Neovim via tmux, establishes connections, returns summary.
+- **State tracking:** Maintains `connected | disconnected` status. Transitions to `disconnected` on graceful exit (`pi_exit` message), unexpected socket close, or `session_shutdown`.
 - **Tool: `nvim_quickfix`** — The model queries or refreshes the modified-file quickfix list.
 - **Command: `/nvim`** — User can manually open/refresh from the pi prompt.
 - **Event hooks:**
@@ -90,7 +92,9 @@ Registers:
   - `{"cmd": "pi_edit", "buf": "...", "file": "...", "diff": "..."}` — Report a user edit to pi.
   - `{"cmd": "pi_open_file", "file": "..."}` — Ask pi to open a file in its own context.
   - `{"cmd": "pi_select", "lines": "...", "file": "..."}` — Send selected text as context.
+  - `{"cmd": "pi_exit"}` — Sent by the Lua module's `VimLeave` autocmd just before Neovim closes.
 - Responses back to Neovim (optional acknowledgements).
+- **Connection lifecycle:** Listens for socket `'close'` events. If the socket closes without receiving a `pi_exit` message (crash/kill), it treats it as an unexpected disconnect. In both cases, the extension updates its internal state to "disconnected" and cleans up.
 
 ### 4. File Tracker (`src/file-tracker.ts`)
 
@@ -103,12 +107,13 @@ Registers:
 ### 5. Neovim Lifecycle (`src/nvim-lifecycle.ts`)
 
 Orchestrates Neovim instance management:
-- `spawn()` — Runs `nvim --listen /tmp/pi-nvim-<PID>` via `pi.bash()` in the user's prepared tmux pane.
+- `spawn()` — Splits current tmux pane with `tmux split-window -h`, then runs `nvim --listen /tmp/pi-nvim-<PID>` in the new pane via `tmux send-keys`.
 - `waitForReady()` — Polls the msgpack-RPC socket until Neovim responds.
 - `connect()` — Establishes msgpack-RPC client connection.
 - `injectLua()` — Reads `lua/pi-nvim.lua`, sends via `nvim_exec_lua` to Neovim.
 - `startServer()` — Starts the Unix socket server for reverse commands.
-- `shutdown()` — Calls `nvim_command("qa!")`, closes sockets, cleans up temp files.
+- `shutdown()` — Calls `nvim_command("qa!")`, closes the tmux pane (`tmux kill-pane -t`), closes sockets, cleans up temp files.
+- `handleDisconnect(reason)` — Called when Neovim exits (either gracefully via `pi_exit` or unexpectedly via socket close). Updates internal state to "disconnected", cleans up sockets/markers. If the tmux pane is still alive, kills it. Future `open_in_nvim` calls will spawn a fresh instance.
 
 ### 6. Lua Support Module (`lua/pi-nvim.lua`)
 
@@ -139,6 +144,7 @@ end
 
 **Autocmds:**
 - `BufWritePost *` — Reports saved buffer diffs to pi.
+- `VimLeave` — Sends `pi_exit` notification to pi before Neovim terminates.
 - `TextChangedI` (debounced) — Optional live edit tracking.
 
 **User commands in Neovim:**
@@ -197,24 +203,39 @@ Each entry navigable; opens file at line 1 by default. The title "pi-neovim modi
    └─ session_start: scan entries for write/edit ops → build initial file tracker
    └─ Neovim NOT started yet (model-triggered only)
 
-2. Model calls open_in_nvim
-   └─ Spawn nvim in tmux pane
-   └─ Wait for socket
+2. Model calls open_in_nvim (first time)
+   └─ If already connected → return "already_open" status (idempotent)
+   └─ tmux split-window -h -l 50% (creates right pane)
+   └─ tmux send-keys to launch nvim --listen /tmp/pi-nvim-<PID>
+   └─ Wait for socket to appear
    └─ Connect msgpack-RPC client
    └─ Start Unix socket server
-   └─ Inject lua/pi-nvim.lua
+   └─ Inject lua/pi-nvim.lua (includes VimLeave autocmd for exit detection)
    └─ Push quickfix list with already-modified files
    └─ Open requested files
    └─ Mark as "connected"
 
-3. During coding (Neovim open)
+3. During coding (Neovim open in right pane)
+   └─ User can freely switch between left (pi) and right (nvim) panes via tmux
    └─ Model calls write/edit → file tracker updates → push quickfix
    └─ User edits in Neovim → BufWritePost fires → Lua sends diff to pi
    └─ Pi receives edit → may incorporate into context
-   └─ User runs :PiPrompt → sends prompt to pi → pi.processes it
+   └─ User runs :PiPrompt → sends prompt to pi → pi processes it
+
+3a. User closes Neovim manually
+   └─ VimLeave fires → Lua sends pi_exit over socket
+   └─ pi's server receives pi_exit → handleDisconnect("user_closed")
+   └─ Internal state → "disconnected"
+   └─ If user/tmux didn't kill the pane, pi kills it via tmux kill-pane
+   └─ Future open_in_nvim calls spawn a fresh instance (full re-initialization)
+
+3b. Neovim crashes or is killed
+   └─ Socket 'close' event fires on pi's server
+   └─ No pi_exit message received → handleDisconnect("crashed")
+   └─ Same cleanup path as above
 
 4. pi session ends (quit, /new, /resume)
-   └─ session_shutdown: nvim_command("qa!"), close sockets, cleanup
+   └─ session_shutdown: nvim_command("qa!"), close tmux pane, close sockets, cleanup
 ```
 
 ## Dependencies
