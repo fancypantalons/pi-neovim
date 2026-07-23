@@ -100,6 +100,8 @@ local function setup_quickfix_mappings()
       vim.api.nvim_set_current_win(target_win)
 
       -- Open the file in a vertical diff split
+      -- Resolve to absolute first (quickfix paths may be relative)
+      filepath = vim.fn.fnamemodify(filepath, ":p")
       local dir = vim.fn.fnamemodify(filepath, ":h")
       local reporoot = vim.fn.systemlist(
         "git -C " .. vim.fn.shellescape(dir) .. " rev-parse --show-toplevel 2>/dev/null"
