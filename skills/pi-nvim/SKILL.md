@@ -1,6 +1,6 @@
 ---
 name: pi-nvim
-description: Neovim integration for pi.dev — open files, browse agent-modified files in a quickfix list, side-by-side git diffs, and two-way editing. Use when the user wants to see code in a full editor, review your changes, or interact with code through Neovim. Automatically adapts to tmux sessions and embedded terminal contexts.
+description: Neovim integration for pi.dev — open files, browse agent-modified files in a custom scratch buffer, side-by-side git diffs, and two-way editing. Use when the user wants to see code in a full editor, review your changes, or interact with code through Neovim. Automatically adapts to tmux sessions and embedded terminal contexts.
 ---
 
 # pi-neovim
@@ -22,7 +22,7 @@ The extension automatically detects its context and adapts:
 
 ### `open_in_nvim`
 
-Connects Neovim with a live quickfix list of all agent-modified files. In tmux mode, opens a right-side pane. In embedded mode (pi.dev inside a Neovim terminal), connects to the host Neovim directly.
+Connects Neovim with a live tracking list of all agent-modified files. In tmux mode, opens a right-side pane. In embedded mode (pi.dev inside a Neovim terminal), connects to the host Neovim directly. Modified files are displayed in a custom scratch buffer (the "pi-edits buffer") — not the global quickfix list, so it never conflicts with `:grep`, `:make`, or `:vimgrep`.
 
 **Parameters:**
 - `files` (optional) — array of file paths to open initially
@@ -35,19 +35,21 @@ Connects Neovim with a live quickfix list of all agent-modified files. In tmux m
 
 ### `nvim_quickfix`
 
-Query or refresh the list of modified files shown in Neovim's quickfix window.
+Query or refresh the list of modified files shown in the pi-edits buffer.
 
 **Parameters:**
 - `action` — `"list"` to see the current list, `"refresh"` to push updates to Neovim
 
 ## What the User Sees in Neovim
 
-- **Quickfix list** titled "pi-neovim modified files" showing every file you've written or edited
+- **Pi-edits buffer** (opened with `:PiEdits` or `:PiQuickfix`) showing every file you've written or edited
 - **Enter** on any entry opens that file
 - **d** on any entry opens a side-by-side diff (git HEAD vs current)
+- **r** requests a refresh from pi
+- **q** closes the edits window (buffer survives in background)
 - **:PiPrompt _text_** sends a prompt back to you
 - **:PiSendSelection** sends selected text as context
-- **:PiQuickfix** requests a quickfix list refresh
+- The edits buffer is completely independent of the global quickfix — your `:grep` / `:make` results are never clobbered
 
 ## Two-Way Editing
 
@@ -56,6 +58,6 @@ When the user saves a file in Neovim (`:w`), the extension automatically detects
 ## Tips
 
 - Call `open_in_nvim` early when doing multi-file work so the user can follow along
-- After calling `write` or `edit`, the quickfix list updates automatically — no need to call `nvim_quickfix` each time
+- After calling `write` or `edit`, the edits buffer updates silently in the background — no need to call `nvim_quickfix` each time
+- Tell the user they can run `:PiEdits` (or `:PiQuickfix` for muscle memory) to view the list
 - When the user asks "what did you change?", call `open_in_nvim` so they can browse with the 'd' diff key
-- If Neovim is already open and the user asks for a refresh, use `nvim_quickfix` with action `"refresh"`

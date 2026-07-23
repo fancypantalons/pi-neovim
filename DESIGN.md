@@ -222,30 +222,34 @@ Returns the current modified-files list or refreshes from session.
 
 ## Quickfix List
 
-### Format
+> **Note:** The quickfix list has been replaced with a **custom scratch buffer** (`pi://edits`). This avoids conflicts with `:grep`, `:make`, and `:vimgrep` which all share the global quickfix. The buffer supports the same interactions (`Enter` to open, `d` to diff, `r` to refresh, `q` to close) and is completely isolated from the quickfix system.
+
+### Edits Buffer Format
 
 ```
-pi-neovim modified files
-─────────────────────────
+pi.dev modified files
+─────────────────────
 src/index.ts         | write  | 14:32:05
 src/neovim-client.ts | edit   | 14:32:12
 src/nvim-server.ts   | write  | 14:33:01
 ```
 
-The title "pi-neovim modified files" distinguishes it from other quickfix lists.
+The buffer name `pi://edits` distinguishes it from file-backed buffers.
 
 ### Interactions
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Open the file at line 1 (standard quickfix behavior) |
+| `Enter` | Open the file under cursor |
 | `d` | Open a vertical diff split showing changes for the file under cursor |
+| `r` | Request a refresh from pi (sends `pi_open_file` command) |
+| `q` | Close the edits window (buffer survives in background) |
 
 **d → diff implementation:** When `d` is pressed on an entry:
-1. Resolve the filename from the quickfix entry under cursor.
-2. If the file is in a git repo, show `git diff HEAD -- <file>` in a new vertical split using Neovim's built-in diff mode (`:vertical diffsplit`).
-3. If not in a git repo, show the current file buffer in diff mode against an empty scratch buffer (all lines appear as additions).
-4. The mapping is set as a buffer-local keymap on the quickfix window each time the list is populated, so it works even after the user closes and reopens the quickfix.
+1. Resolve the filename from the entry under cursor.
+2. If the file is in a git repo, show `git diff HEAD -- <file>` in a new vertical split.
+3. If not in a git repo, show the current file buffer in diff mode against an empty scratch buffer.
+4. The keymaps are set as buffer-local on the edits buffer, so they persist across refreshes.
 
 ## Session Flow
 

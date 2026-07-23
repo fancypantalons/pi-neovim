@@ -13,8 +13,8 @@ export default function (pi: ExtensionAPI) {
   const lifecycle = createNvimLifecycle(pi);
   const fileTracker = createFileTracker(lifecycle);
 
-  // Wire up quickfix refresh handler so Neovim's :PiQuickfix works
-  lifecycle.setQuickfixRefreshHandler(() => {
+  // Wire up edits refresh handler so Neovim's :PiEdits / :PiQuickfix works
+  lifecycle.setEditsRefreshHandler(() => {
     fileTracker.pushToNeovim().catch(() => {});
   });
 
@@ -54,9 +54,9 @@ export default function (pi: ExtensionAPI) {
   // ── Tool: nvim_quickfix ────────────────────────────────────────────
   pi.registerTool({
     name: "nvim_quickfix",
-    label: "Neovim Quickfix",
+    label: "Neovim Edits",
     description:
-      "Query or refresh the quickfix list of agent-modified files shown in Neovim.",
+      "Query or refresh the pi-edits scratch buffer showing agent-modified files in Neovim.",
     parameters: Type.Object({
       action: Type.String({
         description: '"list" to see current modified files, "refresh" to push updates to Neovim',
@@ -79,7 +79,7 @@ export default function (pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `Quickfix refreshed. ${fileTracker.getEntries().length} modified files.`,
+            text: `Edits refreshed. ${fileTracker.getEntries().length} modified files.`,
           },
         ],
         details: {},
@@ -93,7 +93,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args, ctx) => {
       if (lifecycle.isReady()) {
         await fileTracker.pushToNeovim();
-        ctx.ui.notify("Neovim quickfix refreshed", "info");
+        ctx.ui.notify("Neovim edits refreshed", "info");
       } else {
         const result = await lifecycle.open({});
         ctx.ui.notify(

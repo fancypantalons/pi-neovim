@@ -9,21 +9,21 @@ export interface TrackedFile {
 
 /**
  * Tracks files modified by the agent via write/edit tool calls.
- * Maintains a deduplicated list and can push it as a Neovim quickfix list.
+ * Maintains a deduplicated list and can push it to the Neovim edits buffer.
  */
 export function createFileTracker(
   lifecycle: {
     isReady(): boolean;
-    pushQuickfix(entries: QuickfixEntry[]): Promise<void>;
+    pushEditsBuffer(entries: EditsEntry[]): Promise<void>;
     reloadFile(filepath: string): Promise<void>;
   }
 ) {
   const files = new Map<string, TrackedFile>();
 
   /**
-   * A quickfix entry formatted for Neovim's setqflist.
+   * An edits-buffer entry formatted for the Neovim Lua module.
    */
-  interface QuickfixEntry {
+  interface EditsEntry {
     filename: string;
     lnum: number;
     col: number;
@@ -36,7 +36,7 @@ export function createFileTracker(
     );
   }
 
-  function toQuickfixEntries(): QuickfixEntry[] {
+  function toEditsEntries(): EditsEntry[] {
     return getEntries().map((f, i) => ({
       filename: f.path,
       lnum: 1,
@@ -109,12 +109,12 @@ export function createFileTracker(
 
   async function pushToNeovim() {
     if (!lifecycle.isReady()) return;
-    await lifecycle.pushQuickfix(toQuickfixEntries());
+    await lifecycle.pushEditsBuffer(toEditsEntries());
   }
 
   return {
     getEntries,
-    toQuickfixEntries,
+    toEditsEntries,
     scanSession,
     onToolCall,
     onToolResult,

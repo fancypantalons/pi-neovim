@@ -18,7 +18,7 @@ function nvimBackSocketPath(): string {
 
 export type ConnectionStatus = "disconnected" | "connected";
 
-export interface QuickfixEntry {
+export interface EditsEntry {
   filename: string;
   lnum: number;
   col: number;
@@ -58,10 +58,10 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
   let client: NeovimClient | null = null;
   let server: NvimServer | null = null;
   let tmuxPaneId: string | null = null;
-  let onRefreshQuickfix: (() => void) | null = null;
+  let onRefreshEdits: (() => void) | null = null;
 
-  function setQuickfixRefreshHandler(handler: () => void) {
-    onRefreshQuickfix = handler;
+  function setEditsRefreshHandler(handler: () => void) {
+    onRefreshEdits = handler;
   }
 
   function isReady(): boolean {
@@ -209,11 +209,11 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
   }
 
   /**
-   * Push the quickfix list to Neovim.
+   * Push the edits list to Neovim's scratch buffer.
    */
-  async function pushQuickfix(entries: QuickfixEntry[]): Promise<void> {
+  async function pushEditsBuffer(entries: EditsEntry[]): Promise<void> {
     if (!client || !client.isConnected) return;
-    await client.setQuickfixList(entries, "pi-neovim modified files");
+    await client.updateEditsBuffer(entries);
   }
 
   /**
@@ -323,7 +323,7 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
         break;
       }
       case "pi_open_file":
-        if (onRefreshQuickfix) onRefreshQuickfix();
+        if (onRefreshEdits) onRefreshEdits();
         break;
     }
   }
@@ -335,11 +335,11 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
 
   return {
     open,
-    pushQuickfix,
+    pushEditsBuffer,
     reloadFile,
     shutdown,
     handleDisconnect,
-    setQuickfixRefreshHandler,
+    setEditsRefreshHandler,
     isReady,
     getStatus,
     getMode: () => mode,

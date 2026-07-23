@@ -107,27 +107,38 @@ export class NeovimClient {
   }
 
   /**
-   * Set the quickfix list. Uses JSON-in-Lua to avoid msgpack table
-   * serialization issues across the RPC boundary.
+   * Update the pi-edits scratch buffer content with the given entries.
+   * Uses the Lua module's update_edits_buffer function.
+   * The buffer is created silently if it doesn't exist yet;
+   * call showEditsBuffer() to open it in a window.
    */
-  async setQuickfixList(
+  async updateEditsBuffer(
     entries: Array<{
       filename: string;
       lnum: number;
       col: number;
       text: string;
     }>,
-    title: string = "pi-neovim modified files",
   ): Promise<void> {
-    // Embed JSON via Lua [==[...]==] so that the JSON's closing ]
-    // doesn't get consumed by the Lua string closer.
     const json = JSON.stringify(entries);
-    await this.execLua(`
-      local entries = vim.fn.json_decode([==[${json}]==])
-      vim.fn.setqflist({}, "r", { title = [==[${title}]==], items = entries })
-      vim.cmd("copen")
-      return nil
-    `);
+    await this.execLua(
+      `return require("pi-nvim").update_edits_buffer([==[${json}]==])`,
+    );
+  }
+
+  /**
+   * Show the pi-edits scratch buffer in a window.
+   * Creates the buffer if it doesn't exist.
+   */
+  async showEditsBuffer(): Promise<void> {
+    await this.execLua(`return require("pi-nvim").show_edits_buffer()`);
+  }
+
+  /**
+   * Close the pi-edits buffer window (buffer survives in background).
+   */
+  async closeEditsBuffer(): Promise<void> {
+    await this.execLua(`return require("pi-nvim").close_edits_buffer()`);
   }
 
   /**
