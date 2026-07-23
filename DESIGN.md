@@ -147,6 +147,10 @@ end
 - `VimLeave` — Sends `pi_exit` notification to pi before Neovim terminates.
 - `TextChangedI` (debounced) — Optional live edit tracking.
 
+**Quickfix mappings (buffer-local):**
+- `Enter` — Open file under cursor (built-in quickfix behavior).
+- `d` — Open `:vertical diffsplit` showing `git diff HEAD` for the file under cursor. Falls back to diff against empty buffer if not in a git repo. Mapped when `setqflist` is called via an `ftplugin`-style hook on the qf buffer.
+
 **User commands in Neovim:**
 - `:PiPrompt <text>` — Send a prompt to pi.
 - `:PiSendSelection` — Send visually selected text as context to pi.
@@ -184,7 +188,9 @@ parameters: Type.Object({
 
 Returns the current modified-files list or refreshes from session.
 
-## Quickfix List Format
+## Quickfix List
+
+### Format
 
 ```
 pi-neovim modified files
@@ -194,7 +200,20 @@ src/neovim-client.ts | edit   | 14:32:12
 src/nvim-server.ts   | write  | 14:33:01
 ```
 
-Each entry navigable; opens file at line 1 by default. The title "pi-neovim modified files" distinguishes it from other quickfix lists.
+The title "pi-neovim modified files" distinguishes it from other quickfix lists.
+
+### Interactions
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open the file at line 1 (standard quickfix behavior) |
+| `d` | Open a vertical diff split showing changes for the file under cursor |
+
+**d → diff implementation:** When `d` is pressed on an entry:
+1. Resolve the filename from the quickfix entry under cursor.
+2. If the file is in a git repo, show `git diff HEAD -- <file>` in a new vertical split using Neovim's built-in diff mode (`:vertical diffsplit`).
+3. If not in a git repo, show the current file buffer in diff mode against an empty scratch buffer (all lines appear as additions).
+4. The mapping is set as a buffer-local keymap on the quickfix window each time the list is populated, so it works even after the user closes and reopens the quickfix.
 
 ## Session Flow
 
