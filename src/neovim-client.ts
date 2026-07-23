@@ -1,6 +1,7 @@
 import { encode, decode } from "@msgpack/msgpack";
 import { connect, Socket } from "node:net";
 import { once } from "node:events";
+import { resolve as resolvePath } from "node:path";
 
 /**
  * Minimal msgpack-RPC client for Neovim.
@@ -131,9 +132,11 @@ export class NeovimClient {
 
   /**
    * Open a file in the current window.
+   * Resolves to absolute path so it works regardless of Neovim's cwd.
    */
   async openFile(filepath: string): Promise<void> {
-    await this.call("nvim_command", "e " + filepath);
+    const abs = resolvePath(filepath);
+    await this.execLua(`vim.cmd("e " .. vim.fn.fnameescape([==[${abs}]==]))`);
   }
 
   /**
@@ -146,10 +149,12 @@ export class NeovimClient {
   /**
    * Force-reload a file in all buffers that have it open, but only if
    * the buffer has no unsaved changes (respects user's edits).
+   * Resolves to absolute path so buffer-name comparison is reliable.
    */
   async reloadFile(filepath: string): Promise<void> {
+    const abs = resolvePath(filepath);
     await this.execLua(`
-      local target = [==[${filepath}]==]
+      local target = [==[${abs}]==]
       for _, buf in ipairs(vim.api.nvim_list_bufs()) do
         if vim.api.nvim_buf_is_valid(buf) then
           local name = vim.api.nvim_buf_get_name(buf)

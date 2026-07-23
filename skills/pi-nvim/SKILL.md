@@ -1,11 +1,15 @@
 ---
 name: pi-nvim
-description: Neovim integration for pi.dev — open files, browse agent-modified files in a quickfix list, side-by-side git diffs, and two-way editing. Use when the user wants to see code in a full editor, review your changes, or interact with code through Neovim.
+description: Neovim integration for pi.dev — open files, browse agent-modified files in a quickfix list, side-by-side git diffs, and two-way editing. Use when the user wants to see code in a full editor, review your changes, or interact with code through Neovim. Automatically adapts to tmux sessions and embedded terminal contexts.
 ---
 
 # pi-neovim
 
 Use this skill when you want to show the user code in a full editor or when the user wants to inspect files you've modified.
+
+The extension automatically detects its context and adapts:
+- **Tmux mode:** pi.dev runs in a tmux pane → spawns a separate Neovim in a side pane
+- **Embedded mode:** pi.dev runs inside a Neovim `:terminal` buffer → connects to the host Neovim directly
 
 ## When to Use
 
@@ -18,7 +22,7 @@ Use this skill when you want to show the user code in a full editor or when the 
 
 ### `open_in_nvim`
 
-Opens Neovim in a right tmux pane with a live quickfix list of all agent-modified files.
+Connects Neovim with a live quickfix list of all agent-modified files. In tmux mode, opens a right-side pane. In embedded mode (pi.dev inside a Neovim terminal), connects to the host Neovim directly.
 
 **Parameters:**
 - `files` (optional) — array of file paths to open initially
@@ -27,7 +31,7 @@ Opens Neovim in a right tmux pane with a live quickfix list of all agent-modifie
 
 **When to call:** Call this when the user asks to see your work, when you've finished making changes and want the user to review, or when the user seems to want editor-level interaction.
 
-**Behavior:** Idempotent — if Neovim is already open, returns current status. If the user closed Neovim, spawns a fresh instance.
+**Behavior:** Idempotent — if Neovim is already connected, returns current status. In tmux mode, if the user closed Neovim, spawns a fresh instance.
 
 ### `nvim_quickfix`
 

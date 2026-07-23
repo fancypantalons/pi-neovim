@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import { createNvimLifecycle } from "./nvim-lifecycle";
 import { createFileTracker } from "./file-tracker";
 
-// NOTE: The factory is re-invoked on /resume, /new, /fork, and /reload, each
+// The factory is re-invoked on /resume, /new, /fork, and /reload, each
 // time with a fresh `pi` bound to the new session. We create lifecycle and
 // fileTracker per call so stale `pi` references never escape (the error
 // "This extension ctx is stale after session replacement or reload" comes
@@ -23,9 +23,11 @@ export default function (pi: ExtensionAPI) {
     name: "open_in_nvim",
     label: "Open Neovim",
     description:
-      "Open Neovim in a right tmux pane with a live quickfix list of agent-modified files. " +
+      "Connect Neovim with a live quickfix list of agent-modified files. " +
+      "In tmux sessions: opens Neovim in a right split pane. " +
+      "When pi.dev runs inside a Neovim terminal: connects to the host Neovim directly. " +
       "Call this when you want the user to see, browse, or edit code in a full editor. " +
-      "Idempotent: if Neovim is already open, returns its current status.",
+      "Idempotent: if Neovim is already connected, returns its current status.",
     parameters: Type.Object({
       files: Type.Optional(
         Type.Array(Type.String(), {

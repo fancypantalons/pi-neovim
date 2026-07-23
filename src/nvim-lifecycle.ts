@@ -26,10 +26,34 @@ export interface QuickfixEntry {
 }
 
 /**
+ * Operating mode of the extension.
+ *
+ * - "tmux":     pi.dev runs in a tmux pane. The extension spawns a separate
+ *               Neovim instance in a right-side tmux pane via tmux split-window.
+ *               Used when pi.dev is launched from a tmux session.
+ *
+ * - "embedded": pi.dev runs inside a Neovim :terminal buffer. The extension
+ *               communicates directly with the host Neovim via the $NVIM socket
+ *               that Neovim exports to all terminal children. No tmux commands.
+ *               Detected automatically when $NVIM is set.
+ */
+export type NvimMode = "tmux" | "embedded";
+
+/** Detect the operating mode from the environment. */
+export function detectMode(): NvimMode {
+  return process.env.NVIM ? "embedded" : "tmux";
+}
+
+/**
  * Manages the full lifecycle of the Neovim instance:
  * spawn, connect, Lua injection, reverse server, shutdown.
  */
 export function createNvimLifecycle(pi: ExtensionAPI) {
+  const mode: NvimMode = detectMode();
+  // In embedded mode, the host Neovim's RPC socket is available via $NVIM.
+  // In tmux mode, we spawn a fresh Neovim with --listen to create our own.
+  const hostNvimSocket: string | null = mode === "embedded" ? (process.env.NVIM || null) : null;
+
   let status: ConnectionStatus = "disconnected";
   let client: NeovimClient | null = null;
   let server: NvimServer | null = null;
@@ -49,7 +73,8 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
   }
 
   /**
-   * Open Neovim: split tmux pane, start nvim, connect, inject Lua, push quickfix.
+   * Open Neovim: in tmux mode, spawn a new Neovim in a tmux split pane.
+   * In embedded mode, connect to the host Neovim via $NVIM socket.
    */
   async function open(params: {
     files?: string[];
@@ -63,23 +88,36 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
       };
     }
 
-    // 1. Spawn Neovim in a new tmux pane, capturing the pane ID
-    const nvimSocket = nvimSocketPath();
-    const spawnCmd = `tmux split-window -h -l 50% -P -F '#{pane_id}' nvim --listen ${nvimSocket}`;
+    let nvimSocket: string;
 
-    try {
-      tmuxPaneId = execSync(spawnCmd, { encoding: "utf-8", timeout: 5000 }).trim();
-    } catch (err: any) {
-      return {
-        content: [{ type: "text", text: `Failed to spawn Neovim: ${err.message || err}` }],
-        details: { status: "error", error: String(err) },
-      };
+    if (mode === "tmux") {
+      // ── tmux mode: spawn a fresh Neovim instance ──────────────────
+      nvimSocket = nvimSocketPath();
+      const spawnCmd = `tmux split-window -h -l 50% -P -F '#{pane_id}' nvim --listen ${nvimSocket}`;
+
+      try {
+        tmuxPaneId = execSync(spawnCmd, { encoding: "utf-8", timeout: 5000 }).trim();
+      } catch (err: any) {
+        return {
+          content: [{ type: "text", text: `Failed to spawn Neovim: ${err.message || err}` }],
+          details: { status: "error", error: String(err) },
+        };
+      }
+
+      // Wait for the Neovim socket to appear
+      await waitForSocket(nvimSocket, 5000);
+    } else {
+      // ── embedded mode: connect to the host Neovim socket ──────────
+      if (!hostNvimSocket) {
+        return {
+          content: [{ type: "text", text: "Embedded mode detected ($NVIM set) but socket path is empty." }],
+          details: { status: "error" },
+        };
+      }
+      nvimSocket = hostNvimSocket;
     }
 
-    // 2. Wait for the Neovim socket to appear
-    await waitForSocket(nvimSocket, 5000);
-
-    // 3. Connect msgpack-RPC client
+    // Connect msgpack-RPC client (common path for both modes)
     client = new NeovimClient();
     try {
       await client.connect(nvimSocket);
@@ -153,15 +191,17 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
 
     status = "connected";
 
+    const modeLabel = mode === "embedded" ? `host Neovim (${nvimSocket})` : "right tmux pane";
     return {
       content: [
         {
           type: "text",
-          text: `Neovim opened in right pane. RPC connected. Lua module injected. Back-channel server listening.`,
+          text: `Connected to ${modeLabel}. RPC established. Lua module injected. Back-channel server listening.`,
         },
       ],
       details: {
         status: "connected",
+        mode,
         nvim_socket: nvimSocket,
         back_socket: backSocket,
       },
@@ -177,25 +217,32 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
   }
 
   /**
-   * Shut down Neovim: close the tmux pane, disconnect, clean up sockets.
+   * Shut down the integration.
+   *
+   * In tmux mode: quit the spawned Neovim and kill its tmux pane.
+   * In embedded mode: disconnect only — the host Neovim must stay alive.
    */
   async function shutdown(): Promise<void> {
-    if (client?.isConnected) {
-      try {
-        await client.command("qa!");
-      } catch {
-        // Best effort
+    if (mode === "tmux") {
+      // Quit the Neovim we spawned
+      if (client?.isConnected) {
+        try {
+          await client.command("qa!");
+        } catch {
+          // Best effort
+        }
       }
-    }
 
-    // Kill the tmux pane we spawned
-    if (tmuxPaneId) {
-      try {
-        execSync(`tmux kill-pane -t ${tmuxPaneId}`, { timeout: 3000 });
-      } catch {
-        // Best effort
+      // Kill the tmux pane we spawned
+      if (tmuxPaneId) {
+        try {
+          execSync(`tmux kill-pane -t ${tmuxPaneId}`, { timeout: 3000 });
+        } catch {
+          // Best effort
+        }
       }
     }
+    // In embedded mode: just disconnect — never kill the host Neovim.
 
     cleanup();
   }
@@ -215,8 +262,14 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
     tmuxPaneId = null;
     status = "disconnected";
 
-    // Clean up socket files
-    for (const sock of [nvimSocketPath(), nvimBackSocketPath()]) {
+    // Clean up socket files we created.
+    // In tmux mode: remove both the --listen socket and the back-channel socket.
+    // In embedded mode: only remove the back-channel socket (the host socket is
+    // owned by the parent Neovim, not us).
+    const socketsToClean = mode === "tmux"
+      ? [nvimSocketPath(), nvimBackSocketPath()]
+      : [nvimBackSocketPath()];
+    for (const sock of socketsToClean) {
       try {
         if (existsSync(sock)) unlinkSync(sock);
       } catch {
@@ -289,6 +342,7 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
     setQuickfixRefreshHandler,
     isReady,
     getStatus,
+    getMode: () => mode,
   };
 }
 

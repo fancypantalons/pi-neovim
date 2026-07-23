@@ -1,14 +1,19 @@
 # pi-neovim: Design & Architecture
 
-A pi.dev extension that integrates Neovim into the coding workflow via tmux. When the model decides to show files, it opens Neovim in a side pane with a live quickfix list of modified files and full two-way editing communication.
+A pi.dev extension that integrates Neovim into the coding workflow. Supports two modes:
+
+- **Tmux mode:** pi.dev runs in a tmux pane, spawns a separate Neovim in a right-side pane
+- **Embedded mode:** pi.dev runs inside a Neovim `:terminal` buffer, connects to the host Neovim directly
+
+Mode is auto-detected via the `$NVIM` environment variable (set by Neovim in terminal buffers).
 
 ## Overview
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ tmux                                                    │
+│ tmux mode                                               │
 │ ┌──────────────────┐  ┌──────────────────────────────┐  │
-│ │ pi (left)        │  │ nvim (right)                 │  │
+│ │ pi (left)        │  │ nvim (right, spawned)        │  │
 │ │                  │  │                              │  │
 │ │ Extension:       │  │ Lua module (injected):       │  │
 │ │ ┌──────────────┐ │  │ ┌──────────────────────────┐ │  │
@@ -22,18 +27,37 @@ A pi.dev extension that integrates Neovim into the coding workflow via tmux. Whe
 │ │ └──────────────┘ │  │ └──────────────────────────┘ │  │
 │ └──────────────────┘  └──────────────────────────────┘  │
 └─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ embedded mode                                           │
+│ ┌──────────────────────────────────────────────────────┐│
+│ │ nvim (host)                                         ││
+│ │ ┌────────────────────────────────────────────────┐  ││
+│ │ │ :terminal buffer                               │  ││
+│ │ │ ┌──────────────────┐                           │  ││
+│ │ │ │ pi.dev           │                           │  ││
+│ │ │ │                  │                           │  ││
+│ │ │ │ Extension:       │──── nvim RPC client ──────┼──┼│
+│ │ │ │                  │     (over $NVIM socket)    │  ││
+│ │ │ │ unix socket      │←─── Lua module (same) ────┼──┼│
+│ │ │ │ server (JSON)    │                           │  ││
+│ │ │ └──────────────────┘                           │  ││
+│ │ └────────────────────────────────────────────────┘  ││
+│ └──────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| **Trigger** | Model-triggered tool | Model calls `open_in_nvim` when it wants to show files. Keeps UI clean — no Neovim unless useful. |
-| **Lifecycle** | Session-persistent | One Neovim instance per pi session. Buffers, quickfix, undo history survive across turns. Closes on `session_shutdown`. |
-| **Communication** | Dual-channel msgpack + JSON | pi→nvim uses msgpack-RPC (Neovim's native protocol). nvim→pi uses a Unix socket server in the extension (JSON protocol). |
+| **Trigger** | Model-triggered tool | Model calls `open_in_nvim` when it wants to show files. Keeps UI clean — no Neovim unless useful. In embedded mode, connects to the host rather than spawning. |
+| **Mode detection** | `$NVIM` environment variable | Neovim sets `$NVIM` in `:terminal` children with the host's RPC socket path. If set → embedded mode. Otherwise → tmux mode. |
+| **Lifecycle** | Session-persistent | One Neovim connection per pi session. Buffers, quickfix, undo history survive across turns. In embedded mode: disconnect on shutdown but never kill the host. In tmux mode: closes spawned Neovim on `session_shutdown` or `pi_exit`. |
+| **Communication** | Dual-channel msgpack + JSON | pi→nvim uses msgpack-RPC (Neovim's native protocol). nvim→pi uses a Unix socket server in the extension (JSON protocol). Both modes use the same channels — only the socket paths differ. |
 | **Editing** | Full two-way with auto-diff | User edits in Neovim are diffed automatically and reported to pi. Pi can incorporate user changes into its model of the codebase. |
 | **Quickfix** | Auto-updating modified files | Tracks `write`/`edit` tool calls. Quickfix list pushes to Neovim on every change. Pre-populated from session history at startup. |
-| **Tmux** | Assumed, extension-managed panes | Extension assumes it runs inside tmux. The tool calls `tmux split-window -h` to create the right pane, then launches Neovim in it. Closes the pane on `session_shutdown`. |
+| **Tmux** | Required for tmux mode only | When running in a tmux session, the extension uses `tmux split-window -h` to create the right pane. In embedded mode, no tmux commands are issued — the host Neovim is already the user's editor. |
 | **Distribution** | npm pi-package, git-installed | `pi install git:github.com/user/pi-neovim`. Self-contained with runtime deps in `package.json`. |
 
 ## Package Structure
@@ -106,14 +130,22 @@ Registers:
 
 ### 5. Neovim Lifecycle (`src/nvim-lifecycle.ts`)
 
-Orchestrates Neovim instance management:
-- `spawn()` — `tmux split-window -h -l 50% nvim --listen /tmp/pi-nvim-<PID>`. Creates the right pane and launches Neovim in a single command.
+Orchestrates Neovim instance management. Detects operating mode at startup via `$NVIM`:
+
+**Tmux mode** (`$NVIM` not set):
+- `spawn()` — `tmux split-window -h -l 50% nvim --listen /tmp/pi-nvim-<PID>`. Creates the right pane and launches Neovim.
 - `waitForReady()` — Polls the msgpack-RPC socket until Neovim responds.
+- `shutdown()` — Calls `nvim_command("qa!")`, kills the tmux pane, cleans up sockets.
+
+**Embedded mode** (`$NVIM` is set):
+- `open()` — Connects directly to the `$NVIM` socket. No tmux commands, no spawning.
+- `shutdown()` — Disconnects RPC and stops the reverse server. Does NOT kill the host Neovim or any tmux pane.
+
+**Both modes (common):**
 - `connect()` — Establishes msgpack-RPC client connection.
 - `injectLua()` — Reads `lua/pi-nvim.lua`, sends via `nvim_exec_lua` to Neovim.
 - `startServer()` — Starts the Unix socket server for reverse commands.
-- `shutdown()` — Calls `nvim_command("qa!")`, closes the tmux pane (`tmux kill-pane -t`), closes sockets, cleans up temp files.
-- `handleDisconnect(reason)` — Called when Neovim exits (either gracefully via `pi_exit` or unexpectedly via socket close). Updates internal state to "disconnected", cleans up sockets/markers. If the tmux pane is still alive, kills it. Future `open_in_nvim` calls will spawn a fresh instance.
+- `handleDisconnect(reason)` — Called when Neovim exits (either gracefully via `pi_exit` or unexpectedly). Updates state, cleans up.
 
 ### 6. Lua Support Module (`lua/pi-nvim.lua`)
 
@@ -219,13 +251,23 @@ The title "pi-neovim modified files" distinguishes it from other quickfix lists.
 
 ```
 1. pi session starts
+   └─ Mode auto-detected
+      ├─ $NVIM set → embedded mode (connect to host Neovim)
+      └─ $NVIM not set → tmux mode
    └─ session_start: scan entries for write/edit ops → build initial file tracker
    └─ Neovim NOT started yet (model-triggered only)
 
 2. Model calls open_in_nvim (first time)
-   └─ If already connected → return "already_open" status (idempotent)
+   └─ If already connected → return "already connected" status (idempotent)
+
+   [tmux mode]
    └─ tmux split-window -h -l 50% nvim --listen /tmp/pi-nvim-<PID>
    └─ Wait for socket to appear
+
+   [embedded mode]
+   └─ Connect directly to $NVIM socket
+
+   [both modes continue]
    └─ Connect msgpack-RPC client
    └─ Start Unix socket server
    └─ Inject lua/pi-nvim.lua (includes VimLeave autocmd for exit detection)
@@ -233,27 +275,34 @@ The title "pi-neovim modified files" distinguishes it from other quickfix lists.
    └─ Open requested files
    └─ Mark as "connected"
 
-3. During coding (Neovim open in right pane)
-   └─ User can freely switch between left (pi) and right (nvim) panes via tmux
+3. During coding (Neovim connected)
+   └─ User can freely switch between pi and nvim
    └─ Model calls write/edit → file tracker updates → push quickfix
    └─ User edits in Neovim → BufWritePost fires → Lua sends diff to pi
    └─ Pi receives edit → may incorporate into context
    └─ User runs :PiPrompt → sends prompt to pi → pi processes it
 
-3a. User closes Neovim manually
+3a. User closes Neovim manually (tmux mode)
    └─ VimLeave fires → Lua sends pi_exit over socket
    └─ pi's server receives pi_exit → handleDisconnect("user_closed")
    └─ Internal state → "disconnected"
-   └─ If user/tmux didn't kill the pane, pi kills it via tmux kill-pane
    └─ Future open_in_nvim calls spawn a fresh instance (full re-initialization)
 
-3b. Neovim crashes or is killed
+3b. Neovim crashes or is killed (tmux mode)
    └─ Socket 'close' event fires on pi's server
    └─ No pi_exit message received → handleDisconnect("crashed")
    └─ Same cleanup path as above
 
+3c. Disconnect in embedded mode
+   └─ Socket close or VimLeave → pi handles gracefully
+   └─ State → "disconnected", clean up local sockets only
+   └─ Host Neovim remains alive (pi.dev terminal may have been killed)
+
 4. pi session ends (quit, /new, /resume)
-   └─ session_shutdown: nvim_command("qa!"), close tmux pane, close sockets, cleanup
+   └─ session_shutdown:
+      ├─ tmux mode: nvim_command("qa!"), kill tmux pane
+      └─ embedded mode: disconnect only, host Neovim stays alive
+   └─ Close sockets, cleanup temp files
 ```
 
 ## Dependencies
@@ -267,13 +316,13 @@ The title "pi-neovim modified files" distinguishes it from other quickfix lists.
 - No external Lua dependencies — everything is built into Neovim's stdlib (`vim.fn`, `vim.api`, `vim.loop`)
 
 ### System
-- tmux (assumed)
+- tmux (required for tmux mode only; not needed in embedded mode)
 - Neovim installed and on PATH
 
 ## Open Questions / Future Work
 
 - [x] **Offline mode**: What if the user isn't in tmux? Fallback strategies?
-  - None. Tmux is strictly required.
+  - Embedded mode: when pi.dev runs inside a Neovim terminal, connects to the host Neovim via `$NVIM` socket. No tmux needed.
 - [x] **Multiple nvim instances**: Could the user open multiple panes? How to route?
   - No, there will only be one pi.dev-managed nvim instance.
 - [x] **Diff granularity**: Full file diff vs. hunk-level diffs for edit reporting?

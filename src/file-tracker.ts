@@ -1,3 +1,4 @@
+import { resolve as resolvePath } from "node:path";
 import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 
 export interface TrackedFile {
@@ -96,11 +97,13 @@ export function createFileTracker(
     }
   }
 
-  function addFile(path: string, toolName: string, timestamp: number) {
+  function addFile(p: string, toolName: string, timestamp: number) {
+    // Resolve to absolute so quickfix entries work regardless of Neovim's cwd.
+    const resolved = resolvePath(p);
     // Deduplicate: keep the most recent operation
-    const existing = files.get(path);
+    const existing = files.get(resolved);
     if (!existing || timestamp > existing.timestamp) {
-      files.set(path, { path, toolName, timestamp });
+      files.set(resolved, { path: resolved, toolName, timestamp });
     }
   }
 
