@@ -248,11 +248,20 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
         break;
       }
       case "pi_select": {
-        const s = cmd as { cmd: "pi_select"; file: string; lines: string };
-        pi.sendUserMessage(
-          `Selection from ${s.file}:\n\`\`\`\n${s.lines}\n\`\`\``,
-          { deliverAs: "followUp" },
-        );
+        const s = cmd as {
+          cmd: "pi_select";
+          file: string;
+          lines: string;
+          line_start?: number;
+          line_end?: number;
+          prompt?: string;
+        };
+        const lineRange = (s.line_start !== undefined && s.line_end !== undefined)
+          ? ` (lines ${s.line_start}-${s.line_end})`
+          : "";
+        const selectionBlock = `Selection from ${s.file}${lineRange}:\n\`\`\`\n${s.lines}\n\`\`\``;
+        const prompt = (s.prompt || "Look at this selection").trim();
+        pi.sendUserMessage(`${prompt}\n\n${selectionBlock}`, { deliverAs: "followUp" });
         break;
       }
       case "pi_open_file":

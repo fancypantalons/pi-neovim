@@ -255,8 +255,24 @@ function M.setup(opts)
     local lines = vim.api.nvim_buf_get_lines(0, ls - 1, le, false)
     local text = table.concat(lines, "\n")
     local file = vim.fn.expand("%:p")
-    send_cmd({ cmd = "pi_select", file = file, lines = text })
-  end, { range = true, desc = "Send selected text to pi.dev" })
+    -- Ask the user for the prompt to send along with the selection
+    vim.ui.input({
+      prompt = "Prompt to send with selection: ",
+      default = "Look at this selection",
+    }, function(input)
+      if input == nil or input == "" then
+        return  -- user cancelled
+      end
+      send_cmd({
+        cmd = "pi_select",
+        file = file,
+        lines = text,
+        line_start = ls,
+        line_end = le,
+        prompt = input,
+      })
+    end)
+  end, { range = true, desc = "Send selected text with a prompt to pi.dev" })
 
   vim.api.nvim_create_user_command("PiQuickfix", function()
     -- Triggers pi to re-push the quickfix list
