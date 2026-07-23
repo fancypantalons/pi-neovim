@@ -1,0 +1,14 @@
+{
+  "name": "pi-neovim",
+  "version": "0.1.0",
+  "description": "pi.dev extension integrating Neovim via tmux — live quickfix, two-way editing, and bi-directional RPC",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./src/index.ts"],
+    "skills": []
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "^3.1.0"
+  }
+}

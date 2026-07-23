@@ -272,9 +272,15 @@ The title "pi-neovim modified files" distinguishes it from other quickfix lists.
 
 ## Open Questions / Future Work
 
-- [ ] **Offline mode**: What if the user isn't in tmux? Fallback strategies?
-- [ ] **Multiple nvim instances**: Could the user open multiple panes? How to route?
-- [ ] **Diff granularity**: Full file diff vs. hunk-level diffs for edit reporting?
-- [ ] **Inline diagnostics**: Should pi push LSP diagnostics or annotations to Neovim?
-- [ ] **Progress reporting**: Show pi's current task/status in Neovim's statusline?
-- [ ] **Skills file**: A `SKILL.md` to teach the model when and how to use these tools?
+- [x] **Offline mode**: What if the user isn't in tmux? Fallback strategies?
+  - None. Tmux is strictly required.
+- [x] **Multiple nvim instances**: Could the user open multiple panes? How to route?
+  - No, there will only be one pi.dev-managed nvim instance.
+- [x] **Diff granularity**: Full file diff vs. hunk-level diffs for edit reporting?
+  - Full file diff (this should use the built-in diff view interface)
+- [x] **Inline diagnostics**: Should pi push LSP diagnostics or annotations to Neovim?
+  - Not at this time.
+- [x] **Progress reporting**: Show pi's current task/status in Neovim's statusline?
+  - No
+- [x] **Skills file**: A `SKILL.md` to teach the model when and how to use these tools?
+  - Yes

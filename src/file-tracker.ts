@@ -1,0 +1,115 @@
+import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+
+export interface TrackedFile {
+  path: string;
+  toolName: string; // "write" or "edit"
+  timestamp: number;
+}
+
+/**
+ * Tracks files modified by the agent via write/edit tool calls.
+ * Maintains a deduplicated list and can push it as a Neovim quickfix list.
+ */
+export function createFileTracker(
+  lifecycle: { isReady(): boolean; pushQuickfix(entries: QuickfixEntry[]): Promise<void> }
+) {
+  const files = new Map<string, TrackedFile>();
+
+  /**
+   * A quickfix entry formatted for Neovim's setqflist.
+   */
+  interface QuickfixEntry {
+    filename: string;
+    lnum: number;
+    col: number;
+    text: string;
+  }
+
+  function getEntries(): TrackedFile[] {
+    return Array.from(files.values()).sort(
+      (a, b) => b.timestamp - a.timestamp,
+    );
+  }
+
+  function toQuickfixEntries(): QuickfixEntry[] {
+    return getEntries().map((f, i) => ({
+      filename: f.path,
+      lnum: 1,
+      col: 1,
+      text: `${f.path} | ${f.toolName} | ${new Date(f.timestamp).toLocaleTimeString()}`,
+    }));
+  }
+
+  /**
+   * Scan session entries for pre-existing write/edit operations.
+   * Called on session_start to rebuild state from session history.
+   */
+  function scanSession(entries: Array<{ type?: string; toolName?: string; input?: unknown; timestamp?: number }>) {
+    for (const entry of entries) {
+      if (entry.toolName === "write" || entry.toolName === "edit") {
+        const input = entry.input as { path?: string } | undefined;
+        if (input?.path) {
+          addFile(input.path, entry.toolName, entry.timestamp || Date.now());
+        }
+      }
+    }
+  }
+
+  /**
+   * Called when a write/edit tool call is detected (pre-execution).
+   * Tracks the file preemptively.
+   */
+  function onToolCall(toolName: string, input: { path?: string }) {
+    if (input.path) {
+      addFile(input.path, toolName, Date.now());
+      pushToNeovim().catch(() => {
+        /* Neovim may not be open yet — that's fine */
+      });
+    }
+  }
+
+  /**
+   * Called when a write/edit tool result is received.
+   * Confirms the file was actually written and pushes the quickfix.
+   */
+  function onToolResult(toolName: string, _event: ToolResultEvent) {
+    // Push the updated list to Neovim if connected
+    pushToNeovim().catch(() => {
+      /* Neovim may not be open — that's fine */
+    });
+  }
+
+  function addFile(path: string, toolName: string, timestamp: number) {
+    // Deduplicate: keep the most recent operation
+    const existing = files.get(path);
+    if (!existing || timestamp > existing.timestamp) {
+      files.set(path, { path, toolName, timestamp });
+    }
+  }
+
+  async function pushToNeovim() {
+    if (!lifecycle.isReady()) return;
+    await lifecycle.pushQuickfix(toQuickfixEntries());
+  }
+
+  return {
+    getEntries,
+    toQuickfixEntries,
+    scanSession,
+    onToolCall,
+    onToolResult,
+    pushToNeovim,
+  };
+}
+
+// Singleton holder (set by getFileTracker in index.ts)
+let instance: ReturnType<typeof createFileTracker> | null = null;
+
+export function getFileTracker(
+  lifecycle: { isReady(): boolean; pushQuickfix(entries: any[]): Promise<void> }
+) {
+  if (!instance) {
+    instance = createFileTracker(lifecycle);
+  }
+  return instance;
+}
