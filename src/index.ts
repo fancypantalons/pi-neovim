@@ -106,19 +106,16 @@ export default function (pi: ExtensionAPI) {
     fileTracker.scanSession((ctx.sessionManager as any).getEntries() ?? []);
   });
 
-  // Inject any pending Neovim edits into the agent context on each turn.
-  // Uses before_agent_start because the lifecycle's captured `pi` reference
-  // goes stale on session reload — the event system always has a fresh context.
-  pi.on("before_agent_start", async (event) => {
+  // Inject pending Neovim edits by transforming the user's input.
+  // Using the 'input' event avoids the stale-pi problem and doesn't
+  // touch the system prompt.
+  pi.on("input", async (event) => {
     const edits = lifecycle.drainPendingEdits();
     if (edits.length > 0) {
       const block = edits.join("\n\n");
       return {
-        message: {
-          customType: "nvim-edits",
-          content: block,
-          display: true,
-        },
+        action: "transform",
+        text: block + "\n\n" + event.text,
       };
     }
   });
