@@ -241,9 +241,11 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
         const summary = e.added !== undefined
           ? `User saved ${e.file} (+${e.added}/-${e.removed} lines)`
           : `User saved ${e.file}`;
+        // Trace to a file so we can verify independently
+        require("fs").appendFileSync("/tmp/pi-nvim-debug.log",
+          `${new Date().toISOString()} HANDLER: ${summary}\ndiff: ${e.diff.substring(0, 200)}\n\n`);
         pi.sendUserMessage(
           `[neovim] ${summary}\n\`\`\`diff\n${e.diff}\n\`\`\``,
-          { deliverAs: "followUp" },
         );
         break;
       }
