@@ -48,25 +48,6 @@ local function on_vim_leave()
   send_cmd({ cmd = "pi_exit" })
 end
 
---- Report a buffer save/edit to pi.
---- Opens a :vert diffsplit showing git diff HEAD for the file.
-local function show_diff_for_file(filepath)
-  -- Check if file is in a git repo
-  local in_git = vim.fn.system("git -C " .. vim.fn.shellescape(vim.fn.fnamemodify(filepath, ":h")) .. " rev-parse --is-inside-work-tree 2>/dev/null")
-
-  if vim.v.shell_error == 0 then
-    -- Git repo: show git diff HEAD
-    vim.cmd("vert diffsplit " .. vim.fn.fnameescape(filepath))
-    vim.cmd("diffthis")
-    vim.fn.system("git -C " .. vim.fn.shellescape(vim.fn.fnamemodify(filepath, ":h")) .. " show HEAD:" .. vim.fn.shellescape(filepath))
-    -- TODO: implement proper git diff using :Gvdiffsplit or manual buffer population
-  else
-    -- Not in git: diff against empty buffer
-    vim.cmd("vert diffsplit " .. vim.fn.fnameescape(filepath))
-    vim.cmd("diffthis")
-  end
-end
-
 --- Set up buffer-local quickfix mappings.
 --- Called whenever the quickfix list is populated.
 local function setup_quickfix_mappings()
@@ -119,21 +100,25 @@ local function setup_quickfix_mappings()
       vim.api.nvim_set_current_win(target_win)
 
       -- Open the file in a vertical diff split
-      local ft = vim.filetype.match({ filename = filepath })
-      local in_git = vim.fn.systemlist(
-        "git -C " .. vim.fn.shellescape(vim.fn.fnamemodify(filepath, ":h")) ..
-        " rev-parse --is-inside-work-tree 2>/dev/null"
+      local dir = vim.fn.fnamemodify(filepath, ":h")
+      local reporoot = vim.fn.systemlist(
+        "git -C " .. vim.fn.shellescape(dir) .. " rev-parse --show-toplevel 2>/dev/null"
       )
+      local in_git = (#reporoot > 0 and reporoot[1] ~= "")
 
-      if #in_git > 0 and in_git[1] == "true" then
-        -- Git file: open current version in left split, show git diff HEAD
-        vim.cmd("exec 'vert diffsplit ' .. fnameescape('" .. vim.fn.fnameescape(filepath) .. "')")
+      if in_git then
+        -- Convert absolute path to repo-relative for 'git show HEAD:'
+        local root = reporoot[1]
+        local relpath = string.sub(filepath, #root + 2) -- +2 for the trailing /
+
+        -- Open the working-tree file in a vertical split (right side)
+        vim.cmd("vert diffsplit " .. vim.fn.fnameescape(filepath))
         vim.cmd("diffthis")
+
+        -- Left side: read git HEAD version into a scratch buffer
         vim.cmd("wincmd h")
-        -- Read git HEAD version into the original buffer
         local head_content = vim.fn.systemlist(
-          "git -C " .. vim.fn.shellescape(vim.fn.fnamemodify(filepath, ":h")) ..
-          " show HEAD:" .. vim.fn.shellescape(filepath) .. " 2>/dev/null"
+          "git -C " .. vim.fn.shellescape(dir) .. " show HEAD:" .. relpath .. " 2>/dev/null"
         )
         if vim.v.shell_error == 0 then
           vim.api.nvim_buf_set_lines(0, 0, -1, false, head_content)
@@ -143,7 +128,7 @@ local function setup_quickfix_mappings()
         end
       else
         -- Non-git file: diff against empty buffer
-        vim.cmd("exec 'vert diffsplit ' .. fnameescape('" .. vim.fn.fnameescape(filepath) .. "')")
+        vim.cmd("vert diffsplit " .. vim.fn.fnameescape(filepath))
         vim.cmd("diffthis")
         vim.cmd("wincmd h")
         vim.cmd("enew")
