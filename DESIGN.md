@@ -107,7 +107,7 @@ Registers:
 ### 5. Neovim Lifecycle (`src/nvim-lifecycle.ts`)
 
 Orchestrates Neovim instance management:
-- `spawn()` — Splits current tmux pane with `tmux split-window -h`, then runs `nvim --listen /tmp/pi-nvim-<PID>` in the new pane via `tmux send-keys`.
+- `spawn()` — `tmux split-window -h -l 50% nvim --listen /tmp/pi-nvim-<PID>`. Creates the right pane and launches Neovim in a single command.
 - `waitForReady()` — Polls the msgpack-RPC socket until Neovim responds.
 - `connect()` — Establishes msgpack-RPC client connection.
 - `injectLua()` — Reads `lua/pi-nvim.lua`, sends via `nvim_exec_lua` to Neovim.
@@ -224,8 +224,7 @@ The title "pi-neovim modified files" distinguishes it from other quickfix lists.
 
 2. Model calls open_in_nvim (first time)
    └─ If already connected → return "already_open" status (idempotent)
-   └─ tmux split-window -h -l 50% (creates right pane)
-   └─ tmux send-keys to launch nvim --listen /tmp/pi-nvim-<PID>
+   └─ tmux split-window -h -l 50% nvim --listen /tmp/pi-nvim-<PID>
    └─ Wait for socket to appear
    └─ Connect msgpack-RPC client
    └─ Start Unix socket server
