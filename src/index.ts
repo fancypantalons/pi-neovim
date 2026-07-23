@@ -103,8 +103,24 @@ export default function (pi: ExtensionAPI) {
 
   // ── Event hooks ────────────────────────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     fileTracker.scanSession((ctx.sessionManager as any).getEntries() ?? []);
+  });
+
+  // Inject any pending Neovim edits into the agent context on each turn.
+  // Uses before_agent_start because the lifecycle's captured `pi` reference
+  // goes stale on session reload — the event system always has a fresh context.
+  pi.on("before_agent_start", async (event) => {
+    const edits = lifecycle.drainPendingEdits();
+    if (edits.length > 0) {
+      const block = edits.join("\n\n");
+      return {
+        message: {
+          customType: "nvim-edits",
+          content: block,
+          display: true,
+        },
+      };
+    }
   });
 
   pi.on("tool_call", async (event) => {

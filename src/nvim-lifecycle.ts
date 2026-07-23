@@ -36,9 +36,18 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
   let tmuxPaneId: string | null = null;
   let onRefreshQuickfix: (() => void) | null = null;
 
+  // Queue for edits from Neovim. Injected via before_agent_start
+  // because the captured `pi` reference goes stale on session reload.
+  const pendingEdits: string[] = [];
+
   /** Register a callback for quickfix refresh requests from Neovim. */
   function setQuickfixRefreshHandler(handler: () => void) {
     onRefreshQuickfix = handler;
+  }
+
+  /** Drain pending edits — called from before_agent_start. */
+  function drainPendingEdits(): string[] {
+    return pendingEdits.splice(0);
   }
 
   function isReady(): boolean {
@@ -241,18 +250,9 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
         const summary = e.added !== undefined
           ? `User saved ${e.file} (+${e.added}/-${e.removed} lines)`
           : `User saved ${e.file}`;
-        require("fs").appendFileSync("/tmp/pi-nvim-debug.log",
-          `${new Date().toISOString()} HANDLER: ${summary}\n`);
-        try {
-          pi.sendUserMessage(
-            `[neovim] ${summary}\n\`\`\`diff\n${e.diff}\n\`\`\``,
-          );
-          require("fs").appendFileSync("/tmp/pi-nvim-debug.log",
-            `  sendUserMessage called OK\n`);
-        } catch (err: any) {
-          require("fs").appendFileSync("/tmp/pi-nvim-debug.log",
-            `  sendUserMessage ERROR: ${err?.message || err}\n`);
-        }
+        pendingEdits.push(
+          `[neovim] ${summary}\n\`\`\`diff\n${e.diff}\n\`\`\``,
+        );
         break;
       }
       case "pi_select": {
@@ -281,6 +281,7 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
     shutdown,
     handleDisconnect,
     setQuickfixRefreshHandler,
+    drainPendingEdits,
     isReady,
     getStatus,
   };
