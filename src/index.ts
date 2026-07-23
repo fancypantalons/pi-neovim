@@ -30,7 +30,12 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      return lifecycle.open(params);
+      const result = await lifecycle.open(params);
+      // Push quickfix after opening so modified files show immediately
+      if (lifecycle.isReady()) {
+        await fileTracker.pushToNeovim();
+      }
+      return result;
     },
   });
 
@@ -83,6 +88,10 @@ export default function (pi: ExtensionAPI) {
           `Neovim: ${(result.content[0] as any).text}`,
           "info",
         );
+        // Push quickfix so already-modified files show immediately
+        if (lifecycle.isReady()) {
+          await fileTracker.pushToNeovim();
+        }
       }
     },
   });

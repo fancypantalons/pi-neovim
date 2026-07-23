@@ -124,6 +124,7 @@ export class NeovimClient {
     await this.execLua(`
       local entries = vim.fn.json_decode([==[${json}]==])
       vim.fn.setqflist({}, "r", { title = [==[${title}]==], items = entries })
+      vim.cmd("copen")
       return nil
     `);
   }
