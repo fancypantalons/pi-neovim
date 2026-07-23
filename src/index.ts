@@ -8,6 +8,11 @@ export default function (pi: ExtensionAPI) {
   const lifecycle = getLifecycle(pi);
   const fileTracker = getFileTracker(lifecycle);
 
+  // Wire up quickfix refresh handler so Neovim's :PiQuickfix works
+  lifecycle.setQuickfixRefreshHandler(() => {
+    fileTracker.pushToNeovim().catch(() => {});
+  });
+
   // ── Tool: open_in_nvim ─────────────────────────────────────────────
   pi.registerTool({
     name: "open_in_nvim",

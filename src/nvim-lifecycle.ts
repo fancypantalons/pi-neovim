@@ -34,6 +34,12 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
   let client: NeovimClient | null = null;
   let server: NvimServer | null = null;
   let tmuxPaneId: string | null = null;
+  let onRefreshQuickfix: (() => void) | null = null;
+
+  /** Register a callback for quickfix refresh requests from Neovim. */
+  function setQuickfixRefreshHandler(handler: () => void) {
+    onRefreshQuickfix = handler;
+  }
 
   function isReady(): boolean {
     return status === "connected";
@@ -228,17 +234,31 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
         handleDisconnect("user_closed");
         break;
       case "pi_prompt":
-        // Send the prompt to pi as a user message
         pi.sendUserMessage(cmd.text as string, { deliverAs: "followUp" });
         break;
-      case "pi_edit":
-        // Not yet implemented — will be used for two-way editing
+      case "pi_edit": {
+        const e = cmd as { cmd: "pi_edit"; file: string; diff: string; added?: number; removed?: number };
+        const summary = e.added !== undefined
+          ? `User saved ${e.file} (+${e.added}/-${e.removed} lines)`
+          : `User saved ${e.file}`;
+        pi.sendMessage({
+          customType: "nvim-edit",
+          content: summary,
+          display: true,
+          details: { file: e.file, diff: e.diff },
+        });
         break;
+      }
+      case "pi_select": {
+        const s = cmd as { cmd: "pi_select"; file: string; lines: string };
+        pi.sendUserMessage(
+          `Selection from ${s.file}:\n\`\`\`\n${s.lines}\n\`\`\``,
+          { deliverAs: "followUp" },
+        );
+        break;
+      }
       case "pi_open_file":
-        // Not yet implemented
-        break;
-      case "pi_select":
-        // Not yet implemented
+        if (onRefreshQuickfix) onRefreshQuickfix();
         break;
     }
   }
@@ -254,6 +274,7 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
     reloadFile,
     shutdown,
     handleDisconnect,
+    setQuickfixRefreshHandler,
     isReady,
     getStatus,
   };

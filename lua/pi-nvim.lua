@@ -179,6 +179,55 @@ function M.setup(opts)
     end,
   })
 
+  -- BufWritePost: auto-detect user saves and report diffs to pi
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    group = augroup,
+    callback = function(args)
+      local filepath = vim.fn.fnamemodify(args.file, ":p")
+      local dir = vim.fn.fnamemodify(filepath, ":h")
+
+      -- Check if in git repo
+      local in_git = vim.fn.systemlist(
+        "git -C " .. vim.fn.shellescape(dir) .. " rev-parse --is-inside-work-tree 2>/dev/null"
+      )
+
+      if #in_git > 0 and in_git[1] == "true" then
+        -- Get git diff HEAD for this file
+        local diff_lines = vim.fn.systemlist(
+          "git -C " .. vim.fn.shellescape(dir) .. " diff HEAD -- " .. vim.fn.shellescape(filepath)
+        )
+        local diff_text = table.concat(diff_lines, "\n")
+
+        if diff_text ~= "" then
+          -- Count added/removed lines
+          local added, removed = 0, 0
+          for _, line in ipairs(diff_lines) do
+            if line:match("^%+") and not line:match("^%+%+%+") then
+              added = added + 1
+            elseif line:match("^- ") and not line:match("^---") then
+              removed = removed + 1
+            end
+          end
+
+          send_cmd({
+            cmd = "pi_edit",
+            file = filepath,
+            diff = diff_text,
+            added = added,
+            removed = removed,
+          })
+        end
+      else
+        -- Non-git: send a notification that the file was saved
+        send_cmd({
+          cmd = "pi_edit",
+          file = filepath,
+          diff = "(non-git file)",
+        })
+      end
+    end,
+  })
+
   -- User commands
   vim.api.nvim_create_user_command("PiPrompt", function(args)
     send_cmd({ cmd = "pi_prompt", text = args.args })

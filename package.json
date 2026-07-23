@@ -6,7 +6,7 @@
   "license": "MIT",
   "pi": {
     "extensions": ["./src/index.ts"],
-    "skills": []
+    "skills": ["./skills"]
   },
   "dependencies": {
     "@msgpack/msgpack": "^3.1.0"
