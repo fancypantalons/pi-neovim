@@ -254,7 +254,7 @@ function M.show_edits_buffer()
   vim.cmd("belowright split")
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(win, bufnr)
-  vim.api.nvim_win_set_height(win, math.min(12, vim.o.lines // 3))
+  vim.api.nvim_win_set_height(win, math.min(12, math.floor(vim.o.lines / 3)))
 end
 
 --- Update the edits buffer content from a JSON string of entries.
