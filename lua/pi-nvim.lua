@@ -321,6 +321,92 @@ function M.close_edits_buffer()
 end
 
 -- ═══════════════════════════════════════════════════════════════════
+-- Telescope integration (optional — registered if telescope is loaded)
+-- ═══════════════════════════════════════════════════════════════════
+
+--- Open a telescope picker listing agent-modified files (from the
+--- pi://edits buffer). Enter opens the file, d opens a git diff.
+function M.telescope_edits()
+  local has_telescope, telescope = pcall(require, "telescope")
+  if not has_telescope then
+    vim.notify("pi-nvim: telescope.nvim is not installed", vim.log.levels.WARN)
+    return
+  end
+
+  local pickers = require("telescope.pickers")
+  local finders = require("telescope.finders")
+  local conf = require("telescope.config").values
+  local actions = require("telescope.actions")
+  local action_state = require("telescope.actions.state")
+
+  -- Read entries from the pi://edits buffer
+  local bufnr = find_edits_buf()
+  local raw_lines = {}
+  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+    raw_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  end
+
+  -- Parse into { filename, tool, time } triples, skipping header lines
+  local entries = {}
+  for _, line in ipairs(raw_lines) do
+    local filename = get_filename_from_line(line)
+    if filename then
+      local parts = vim.split(line, "\t")
+      table.insert(entries, {
+        filename = filename,
+        tool = parts[2] or "",
+        time = parts[3] or "",
+      })
+    end
+  end
+
+  if #entries == 0 then
+    vim.notify("pi-nvim: no modified files tracked yet", vim.log.levels.INFO)
+    return
+  end
+
+  local function entry_maker(entry)
+    return {
+      value = entry,
+      display = entry.filename,
+      ordinal = entry.filename,
+    }
+  end
+
+  pickers
+    .new({}, {
+      prompt_title = "pi-nvim modified files",
+      finder = finders.new_table({
+        results = entries,
+        entry_maker = entry_maker,
+      }),
+      sorter = conf.generic_sorter({}),
+      attach_mappings = function(prompt_bufnr, map)
+        -- Enter: open the file
+        actions.select_default:replace(function()
+          local selection = action_state.get_selected_entry()
+          actions.close(prompt_bufnr)
+          if selection and vim.fn.filereadable(selection.value.filename) == 1 then
+            vim.cmd("e " .. vim.fn.fnameescape(selection.value.filename))
+          end
+        end)
+
+        -- d: git diff
+        map("n", "d", function()
+          local selection = action_state.get_selected_entry()
+          actions.close(prompt_bufnr)
+          if selection then
+            open_diff_for_file(selection.value.filename)
+          end
+        end)
+
+        return true
+      end,
+    })
+    :find()
+end
+
+-- ═══════════════════════════════════════════════════════════════════
 -- Public API (called by pi extension)
 -- ═══════════════════════════════════════════════════════════════════
 
@@ -428,6 +514,18 @@ function M.setup(opts)
     }
     vim.notify(table.concat(info, "\n"), vim.log.levels.INFO)
   end, { desc = "Show pi-nvim connection status" })
+
+  -- Register telescope extension if telescope.nvim is available.
+  -- Allows: :Telescope pi_nvim
+  local has_telescope, telescope = pcall(require, "telescope")
+  if has_telescope then
+    telescope.register_extension({
+      exports = {
+        edits = M.telescope_edits,
+        pi_nvim = M.telescope_edits, -- default
+      },
+    })
+  end
 end
 
 --- Check whether the module is actively connected to a pi.dev instance.
