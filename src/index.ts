@@ -1,7 +1,26 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createNvimLifecycle } from "./nvim-lifecycle";
 import { createFileTracker } from "./file-tracker";
+
+// Read the Lua support module at factory init time so the lifecycle
+// doesn't need to resolve paths at injection time (__dirname is
+// unreliable in pi's compiled extension runtime).
+function loadLuaSource(): string {
+  const candidates = [
+    resolve(__dirname, "..", "lua", "pi-nvim.lua"),
+    resolve(process.cwd(), "lua", "pi-nvim.lua"),
+    resolve(process.cwd(), "..", "lua", "pi-nvim.lua"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) return readFileSync(p, "utf-8");
+  }
+  throw new Error(
+    "pi-nvim: cannot find lua/pi-nvim.lua. Tried: " + candidates.join(", "),
+  );
+}
 
 // The factory is re-invoked on /resume, /new, /fork, and /reload, each
 // time with a fresh `pi` bound to the new session. We create lifecycle and
@@ -9,8 +28,10 @@ import { createFileTracker } from "./file-tracker";
 // "This extension ctx is stale after session replacement or reload" comes
 // from a captured `pi` surviving past a session switch).
 export default function (pi: ExtensionAPI) {
+  const luaSource = loadLuaSource();
+
   // ── State ──────────────────────────────────────────────────────────
-  const lifecycle = createNvimLifecycle(pi);
+  const lifecycle = createNvimLifecycle(pi, luaSource);
   const fileTracker = createFileTracker(lifecycle);
 
   // Wire up edits refresh handler so Neovim's :PiEdits / :PiQuickfix works
@@ -116,9 +137,17 @@ export default function (pi: ExtensionAPI) {
     // The host is already running (pi.dev lives inside its :terminal),
     // so there's no reason to wait for the model to call open_in_nvim.
     if (lifecycle.getMode() === "embedded" && !lifecycle.isReady()) {
-      await lifecycle.open({}).catch(() => {});
+      const result = await lifecycle.open({});
       if (lifecycle.isReady()) {
         await fileTracker.pushToNeovim().catch(() => {});
+      } else {
+        // Report connection failure so the user can see what went wrong
+        const detail = result.details?.error || (result.content[0] as any)?.text || "unknown error";
+        pi.sendMessage({
+          customType: "nvim-edit",
+          content: `[pi-nvim] Failed to auto-connect to host Neovim: ${detail}`,
+          display: true,
+        });
       }
     }
   });

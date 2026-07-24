@@ -3,7 +3,6 @@ import { NeovimClient } from "./neovim-client";
 import { NvimServer, NvimCommand } from "./nvim-server";
 import { existsSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { resolve } from "node:path";
 
 const SOCKET_PREFIX = "/tmp/pi-nvim";
 const PID = process.pid;
@@ -48,7 +47,7 @@ export function detectMode(): NvimMode {
  * Manages the full lifecycle of the Neovim instance:
  * spawn, connect, Lua injection, reverse server, shutdown.
  */
-export function createNvimLifecycle(pi: ExtensionAPI) {
+export function createNvimLifecycle(pi: ExtensionAPI, luaSource: string) {
   const mode: NvimMode = detectMode();
   // In embedded mode, the host Neovim's RPC socket is available via $NVIM.
   // In tmux mode, we spawn a fresh Neovim with --listen to create our own.
@@ -128,21 +127,11 @@ export function createNvimLifecycle(pi: ExtensionAPI) {
       };
     }
 
-    // 4. Inject Lua support module via require()
-    //    We can't execLua the raw source because it returns a function table
-    //    that msgpack can't serialize. Instead, add the lua dir to
-    //    package.path and require() the module with an explicit return nil.
-    const luaDir = resolve(__dirname, "..", "lua");
-    if (!existsSync(resolve(luaDir, "pi-nvim.lua"))) {
-      return {
-        content: [{ type: "text", text: `Lua module not found at ${luaDir}/pi-nvim.lua` }],
-        details: { status: "error" },
-      };
-    }
+    // 4. Inject Lua support module directly (source pre-loaded at factory init).
+    //    We execLua the full source instead of require() because __dirname is
+    //    unreliable in pi's compiled extension runtime.
     try {
-      const escaped = luaDir.replace(/\\/g, "\\\\");
-      await client.execLua(`package.path = package.path .. ";${escaped}/?.lua;${escaped}/?/init.lua"`);
-      await client.execLua(`require("pi-nvim"); return nil`);
+      await client.execLua(luaSource);
     } catch (err: any) {
       return {
         content: [{ type: "text", text: `Failed to inject Lua module: ${err.message || err}` }],
