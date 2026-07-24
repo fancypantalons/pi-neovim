@@ -33,7 +33,7 @@ pi install git:github.com/brettk/pi-neovim
 Or for local development:
 
 ```bash
-git clone https://github.com/brettk/pi-neovim.git ~/git/pi-neovim
+git clone https://github.com/fancypantalons/pi-neovim.git ~/git/pi-neovim
 cd ~/git/pi-neovim && npm install
 # Add to ~/.pi/agent/settings.json:
 #   "extensions": ["~/git/pi-neovim/src/index.ts"]
