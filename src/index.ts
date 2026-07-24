@@ -1,21 +1,21 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createNvimLifecycle } from "./nvim-lifecycle";
 import { createFileTracker } from "./file-tracker";
 
-// Read the Lua support module at factory init time so the lifecycle
-// doesn't need to resolve paths at injection time (__dirname is
-// unreliable in pi's compiled extension runtime).
-function loadLuaSource(): string {
+// Resolve the lua/ directory at factory init time so the lifecycle
+// doesn't need to rely on __dirname (unreliable in pi's compiled
+// extension runtime).
+function findLuaDir(): string {
   const candidates = [
-    resolve(__dirname, "..", "lua", "pi-nvim.lua"),
-    resolve(process.cwd(), "lua", "pi-nvim.lua"),
-    resolve(process.cwd(), "..", "lua", "pi-nvim.lua"),
+    resolve(__dirname, "..", "lua"),
+    resolve(process.cwd(), "lua"),
+    resolve(process.cwd(), "..", "lua"),
   ];
   for (const p of candidates) {
-    if (existsSync(p)) return readFileSync(p, "utf-8");
+    if (existsSync(resolve(p, "pi-nvim.lua"))) return p;
   }
   throw new Error(
     "pi-nvim: cannot find lua/pi-nvim.lua. Tried: " + candidates.join(", "),
@@ -28,10 +28,10 @@ function loadLuaSource(): string {
 // "This extension ctx is stale after session replacement or reload" comes
 // from a captured `pi` surviving past a session switch).
 export default function (pi: ExtensionAPI) {
-  const luaSource = loadLuaSource();
+  const luaDir = findLuaDir();
 
   // ── State ──────────────────────────────────────────────────────────
-  const lifecycle = createNvimLifecycle(pi, luaSource);
+  const lifecycle = createNvimLifecycle(pi, luaDir);
   const fileTracker = createFileTracker(lifecycle);
 
   // Wire up edits refresh handler so Neovim's :PiEdits / :PiQuickfix works

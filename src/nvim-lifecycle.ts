@@ -47,7 +47,7 @@ export function detectMode(): NvimMode {
  * Manages the full lifecycle of the Neovim instance:
  * spawn, connect, Lua injection, reverse server, shutdown.
  */
-export function createNvimLifecycle(pi: ExtensionAPI, luaSource: string) {
+export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
   const mode: NvimMode = detectMode();
   // In embedded mode, the host Neovim's RPC socket is available via $NVIM.
   // In tmux mode, we spawn a fresh Neovim with --listen to create our own.
@@ -127,11 +127,12 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaSource: string) {
       };
     }
 
-    // 4. Inject Lua support module directly (source pre-loaded at factory init).
-    //    We execLua the full source instead of require() because __dirname is
-    //    unreliable in pi's compiled extension runtime.
+    // 4. Inject Lua support module via require(). Directory resolved
+    //    at factory init since __dirname is unreliable in pi's runtime.
     try {
-      await client.execLua(luaSource);
+      const escaped = luaDir.replace(/\\/g, "\\\\");
+      await client.execLua(`package.path = package.path .. ";${escaped}/?.lua;${escaped}/?/init.lua"`);
+      await client.execLua(`require("pi-nvim"); return nil`);
     } catch (err: any) {
       return {
         content: [{ type: "text", text: `Failed to inject Lua module: ${err.message || err}` }],
