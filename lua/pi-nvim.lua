@@ -192,19 +192,32 @@ local function ensure_edits_buf()
   -- Buffer-local keymaps
   local opts = { noremap = true, silent = true, buffer = bufnr }
 
+  -- Helper: find a suitable window for opening a file.
+  -- Skips specialty windows (nvim-tree, terminal, quickfix) and the edits buffer.
+  local function find_target_window()
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      local buf = vim.api.nvim_win_get_buf(win)
+      if buf ~= bufnr then
+        local bt = vim.bo[buf].bt or ""
+        if bt ~= "nofile" and bt ~= "terminal" and bt ~= "quickfix" then
+          return win
+        end
+      end
+    end
+    -- Fallback: any non-edits window
+    for _, win in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_win_get_buf(win) ~= bufnr then return win end
+    end
+  end
+
   -- <CR>: open file under cursor
   vim.keymap.set("n", "<CR>", function()
     local cursor = vim.api.nvim_win_get_cursor(0)
     local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1]
     local filename = get_filename_from_line(line)
     if not filename then return end
-    -- Find a non-edits window to open the file in
-    for _, win in ipairs(vim.api.nvim_list_wins()) do
-      if vim.api.nvim_win_get_buf(win) ~= bufnr then
-        vim.api.nvim_set_current_win(win)
-        break
-      end
-    end
+    local target = find_target_window()
+    if target then vim.api.nvim_set_current_win(target) end
     vim.cmd("e " .. vim.fn.fnameescape(filename))
   end, opts)
 
@@ -214,13 +227,8 @@ local function ensure_edits_buf()
     local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1]
     local filename = get_filename_from_line(line)
     if not filename then return end
-    -- Find a non-edits window to operate in
-    for _, win in ipairs(vim.api.nvim_list_wins()) do
-      if vim.api.nvim_win_get_buf(win) ~= bufnr then
-        vim.api.nvim_set_current_win(win)
-        break
-      end
-    end
+    local target = find_target_window()
+    if target then vim.api.nvim_set_current_win(target) end
     open_diff_for_file(filename)
   end, opts)
 
