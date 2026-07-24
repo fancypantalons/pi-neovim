@@ -111,6 +111,16 @@ export default function (pi: ExtensionAPI) {
   // ── Event hooks ────────────────────────────────────────────────────
   pi.on("session_start", async (_event, ctx) => {
     fileTracker.scanSession((ctx.sessionManager as any).getEntries() ?? []);
+
+    // In embedded mode, auto-connect to the host Neovim immediately.
+    // The host is already running (pi.dev lives inside its :terminal),
+    // so there's no reason to wait for the model to call open_in_nvim.
+    if (lifecycle.getMode() === "embedded" && !lifecycle.isReady()) {
+      await lifecycle.open({}).catch(() => {});
+      if (lifecycle.isReady()) {
+        await fileTracker.pushToNeovim().catch(() => {});
+      }
+    }
   });
 
   pi.on("tool_call", async (event) => {
