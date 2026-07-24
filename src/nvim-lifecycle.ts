@@ -92,7 +92,8 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
     if (mode === "tmux") {
       // ── tmux mode: spawn a fresh Neovim instance ──────────────────
       nvimSocket = nvimSocketPath();
-      const spawnCmd = `tmux split-window -h -l 50% -P -F '#{pane_id}' nvim --listen ${nvimSocket}`;
+      const targetPane = process.env.TMUX_PANE || "";
+      const spawnCmd = `tmux split-window -h -l 50% ${targetPane ? "-t " + targetPane : ""} -P -F '#{pane_id}' nvim --listen ${nvimSocket}`;
 
       try {
         tmuxPaneId = execSync(spawnCmd, { encoding: "utf-8", timeout: 5000 }).trim();
