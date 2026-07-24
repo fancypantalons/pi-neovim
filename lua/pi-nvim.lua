@@ -404,13 +404,20 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("PiStatus", function()
     local info = {
       "pi-nvim status:",
-      "  connected: " .. tostring(connected),
+      "  connected: " .. tostring(M.is_connected()),
       "  socket_path: " .. tostring(socket_path),
       "  pi_pid: " .. tostring(pi_pid),
       "  sock_active: " .. tostring(sock ~= nil and not sock:is_closing()),
     }
     vim.notify(table.concat(info, "\n"), vim.log.levels.INFO)
   end, { desc = "Show pi-nvim connection status" })
+end
+
+--- Check whether the module is actively connected to a pi.dev instance.
+--- Returns true when the Unix socket to pi is established and healthy.
+--- @return boolean
+function M.is_connected()
+  return connected and sock ~= nil and not sock:is_closing()
 end
 
 --- Send a command to pi. Useful for other Lua code to call.
