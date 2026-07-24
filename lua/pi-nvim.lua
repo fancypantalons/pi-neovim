@@ -350,7 +350,10 @@ function M.telescope_edits()
   local entries = {}
   for _, line in ipairs(raw_lines) do
     local filename = get_filename_from_line(line)
-    if filename then
+    -- Guard: skip anything that isn't a readable file on disk.
+    -- This filters header/divider lines without relying on Lua's
+    -- byte-oriented UTF-8 pattern matching.
+    if filename and vim.fn.filereadable(filename) == 1 then
       local parts = vim.split(line, "\t")
       table.insert(entries, {
         filename = filename,
