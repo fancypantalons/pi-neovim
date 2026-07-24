@@ -109,6 +109,7 @@ local function get_filename_from_line(line)
 end
 
 --- Open a vertical git-diff split for the given file.
+--- LEFT = git HEAD content in a scratch buffer, RIGHT = working-tree file.
 local function open_diff_for_file(filepath)
   filepath = vim.fn.fnamemodify(filepath, ":p")
   local dir = vim.fn.fnamemodify(filepath, ":h")
@@ -120,10 +121,16 @@ local function open_diff_for_file(filepath)
   if in_git then
     local root = reporoot[1]
     local relpath = string.sub(filepath, #root + 2)
-    -- Right side: working-tree file
+
+    -- vert diffsplit creates a new window to the LEFT of the current one.
+    -- Layout after split: [LEFT=new: file] [RIGHT=old: original buffer]
     vim.cmd("vert diffsplit " .. vim.fn.fnameescape(filepath))
+    -- We are now in the LEFT (new) window showing the file.
+    -- Set up RIGHT side first: go right, load working-tree file, enable diff.
+    vim.cmd("wincmd l")
+    vim.cmd("e " .. vim.fn.fnameescape(filepath))
     vim.cmd("diffthis")
-    -- Left side: HEAD version in a fresh scratch buffer
+    -- Now set up LEFT side: go back left, replace with HEAD content.
     vim.cmd("wincmd h")
     vim.cmd("enew!")
     local head_content = vim.fn.systemlist(
@@ -133,13 +140,12 @@ local function open_diff_for_file(filepath)
       vim.api.nvim_buf_set_lines(0, 0, -1, false, head_content)
       vim.bo.modified = false
       vim.bo.buftype = "nofile"
-      vim.cmd("diffthis")
-    else
-      vim.cmd("diffthis")
     end
+    vim.cmd("diffthis")
   else
     -- Non-git: diff against empty buffer
     vim.cmd("vert diffsplit " .. vim.fn.fnameescape(filepath))
+    vim.cmd("wincmd l")
     vim.cmd("diffthis")
     vim.cmd("wincmd h")
     vim.cmd("enew")
@@ -172,24 +178,10 @@ local function find_window_for_buf(bufnr)
 end
 
 --- Create the edits buffer (if it doesn't exist) with proper options and keymaps.
-local function ensure_edits_buf()
-  local bufnr = find_edits_buf()
-  if bufnr then
-    return bufnr
-  end
-
-  -- Create a new buffer
-  bufnr = vim.api.nvim_create_buf(false, true) -- listed=false, scratch=true
-  vim.api.nvim_buf_set_name(bufnr, edits_buf_name)
-
-  -- Buffer options
-  vim.bo[bufnr].buftype = "nofile"
-  vim.bo[bufnr].bufhidden = "hide"
-  vim.bo[bufnr].buflisted = false
-  vim.bo[bufnr].modifiable = true -- temporarily so we can write content
-  vim.bo[bufnr].swapfile = false
-
-  -- Buffer-local keymaps
+--- Set up buffer-local keymaps on the edits buffer.
+--- Called every time the buffer is shown or created, so keymap fixes
+--- take effect without requiring the user to wipe the buffer.
+local function setup_edits_keymaps(bufnr)
   local opts = { noremap = true, silent = true, buffer = bufnr }
 
   -- Helper: find a suitable window for opening a file.
@@ -243,6 +235,28 @@ local function ensure_edits_buf()
     local win = find_window_for_buf(bufnr)
     if win then vim.api.nvim_win_close(win, true) end
   end, opts)
+end
+
+--- Create the edits buffer (if it doesn't exist) with proper options.
+--- Keymaps are set up unconditionally so fixes take effect without
+--- requiring the user to manually wipe the old buffer.
+local function ensure_edits_buf()
+  local bufnr = find_edits_buf()
+  if not bufnr then
+    -- Create a new buffer
+    bufnr = vim.api.nvim_create_buf(false, true) -- listed=false, scratch=true
+    vim.api.nvim_buf_set_name(bufnr, edits_buf_name)
+
+    -- Buffer options
+    vim.bo[bufnr].buftype = "nofile"
+    vim.bo[bufnr].bufhidden = "hide"
+    vim.bo[bufnr].buflisted = false
+    vim.bo[bufnr].modifiable = true -- temporarily so we can write content
+    vim.bo[bufnr].swapfile = false
+  end
+
+  -- Always refresh keymaps (overwrites any existing buffer-local mappings)
+  setup_edits_keymaps(bufnr)
 
   return bufnr
 end
