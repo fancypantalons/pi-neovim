@@ -15,6 +15,7 @@ Note: This package incorporates a bunch of Neovim Lua right inside it, and injec
 - **Git-aware diffs** — press `d` on any entry for a vertical split showing `git diff HEAD` changes
 - **Two-way editing** — user saves a file in Neovim and the agent is notified with the diff
 - **Reverse commands** — `:PiPrompt`, `:PiSendSelection`, `:PiEdits`, `:PiStatus`
+- **Telescope integration** — `:Telescope pi_nvim` opens a picker with file preview; `Enter` opens, `d` diffs. Works automatically if [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) is installed
 - **Event-driven** — file tracking updates automatically when the model calls `write` or `edit`; no manual tool calls needed
 
 ## Requirements
@@ -55,6 +56,15 @@ Once installed, the model calls `open_in_nvim` when it wants to show code in Neo
 | `:PiPrompt <text>` | Send a prompt to pi |
 | `:PiSendSelection` | Send visually selected text to pi |
 | `:PiStatus` | Show connection status |
+
+### Telescope picker
+
+If [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) is installed, `:Telescope pi_nvim` opens a fuzzy-findable picker of agent-modified files with a file preview panel on the right.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Open the file |
+| `d` | Vertical diff split (git HEAD vs current) |
 
 ### Two-way editing
 
