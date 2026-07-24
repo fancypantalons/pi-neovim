@@ -1,8 +1,12 @@
 {
   "name": "pi-neovim",
   "version": "0.1.0",
-  "description": "pi.dev extension integrating Neovim via tmux — live quickfix, two-way editing, and bi-directional RPC",
-  "keywords": ["pi-package"],
+  "description": "pi.dev extension integrating Neovim — two-way editing, agent-modified files buffer, git-aware diffs, and bi-directional RPC. Supports tmux and embedded :terminal modes.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brettk/pi-neovim.git"
+  },
+  "homepage": "https://github.com/brettk/pi-neovim#readme",
   "license": "MIT",
   "pi": {
     "extensions": ["./src/index.ts"],
