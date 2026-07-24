@@ -514,18 +514,6 @@ function M.setup(opts)
     }
     vim.notify(table.concat(info, "\n"), vim.log.levels.INFO)
   end, { desc = "Show pi-nvim connection status" })
-
-  -- Register telescope extension if telescope.nvim is available.
-  -- Allows: :Telescope pi_nvim
-  local has_telescope, telescope = pcall(require, "telescope")
-  if has_telescope then
-    telescope.register_extension({
-      exports = {
-        edits = M.telescope_edits,
-        pi_nvim = M.telescope_edits, -- default
-      },
-    })
-  end
 end
 
 --- Check whether the module is actively connected to a pi.dev instance.
