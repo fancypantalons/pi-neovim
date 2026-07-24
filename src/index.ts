@@ -158,8 +158,11 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", (event) => {
     if (event.toolName === "write" || event.toolName === "edit") {
+      // Fire-and-forget: don't block pi output on Neovim being responsive.
+      // onToolResult launches pushToNeovim() and reloadFile() as background
+      // promises with their own .catch() handlers.
       fileTracker.onToolResult(event.toolName, event);
     }
   });

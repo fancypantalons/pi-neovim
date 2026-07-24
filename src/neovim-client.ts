@@ -20,10 +20,20 @@ const REQUEST = 0;
 const RESPONSE = 1;
 const NOTIFICATION = 2;
 
+/** Default timeout for RPC requests before rejecting. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
 export class NeovimClient {
   private socket: Socket | null = null;
   private msgid = 1;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private pending = new Map<
+    number,
+    {
+      resolve: (v: unknown) => void;
+      reject: (e: Error) => void;
+      timer: ReturnType<typeof setTimeout> | null;
+    }
+  >();
   private buffer = Buffer.alloc(0);
   private connected = false;
 
@@ -61,11 +71,30 @@ export class NeovimClient {
 
   /**
    * Send an RPC request and wait for the response.
+   * Times out after `timeoutMs` (default 10s) to prevent hangs when
+   * Neovim is busy, stuck, or the connection has silently dropped.
    */
-  async request(method: string, ...args: unknown[]): Promise<unknown> {
+  async request(
+    method: string,
+    args: unknown[],
+    timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+  ): Promise<unknown> {
     const id = this.msgid++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(
+          new Error(
+            `nvim RPC timeout after ${timeoutMs}ms: ${method}`,
+          ),
+        );
+      }, timeoutMs);
+
+      this.pending.set(id, {
+        resolve,
+        reject,
+        timer,
+      });
       this.send([REQUEST, id, method, args]);
     });
   }
@@ -74,9 +103,13 @@ export class NeovimClient {
    * Call a Neovim API function and return the result.
    * Convenience wrapper around request().
    */
-  async call(method: string, ...args: unknown[]): Promise<unknown> {
+  async call(
+    method: string,
+    args: unknown[] = [],
+    timeoutMs?: number,
+  ): Promise<unknown> {
     try {
-      const result = await this.request(method, ...args);
+      const result = await this.request(method, args, timeoutMs);
       // Neovim returns [error, result] for API calls
       if (Array.isArray(result) && result.length === 2) {
         const [err, val] = result;
@@ -93,24 +126,24 @@ export class NeovimClient {
 
   /**
    * Execute Lua code in Neovim and return the result.
-   * Returns the value returned by the Lua chunk.
    */
-  async execLua(code: string, args: unknown[] = []): Promise<unknown> {
-    return this.call("nvim_exec_lua", code, args);
+  async execLua(
+    code: string,
+    args: unknown[] = [],
+    timeoutMs?: number,
+  ): Promise<unknown> {
+    return this.call("nvim_exec_lua", [code, args], timeoutMs);
   }
 
   /**
    * Execute a Vim command (like :e, :q, :split, etc.)
    */
-  async command(cmd: string): Promise<void> {
-    await this.call("nvim_command", cmd);
+  async command(cmd: string, timeoutMs?: number): Promise<void> {
+    await this.call("nvim_command", [cmd], timeoutMs);
   }
 
   /**
-   * Update the pi-edits scratch buffer content with the given entries.
-   * Uses the Lua module's update_edits_buffer function.
-   * The buffer is created silently if it doesn't exist yet;
-   * call showEditsBuffer() to open it in a window.
+   * Update the pi-edits scratch buffer content. Non-critical: short timeout.
    */
   async updateEditsBuffer(
     entries: Array<{
@@ -123,22 +156,22 @@ export class NeovimClient {
     const json = JSON.stringify(entries);
     await this.execLua(
       `return require("pi-nvim").update_edits_buffer([==[${json}]==])`,
+      [],
+      5_000,
     );
   }
 
   /**
-   * Show the pi-edits scratch buffer in a window.
-   * Creates the buffer if it doesn't exist.
+   * Ping Neovim with a trivial API call. Returns true if responsive.
+   * Used by the heartbeat to detect silent disconnects.
    */
-  async showEditsBuffer(): Promise<void> {
-    await this.execLua(`return require("pi-nvim").show_edits_buffer()`);
-  }
-
-  /**
-   * Close the pi-edits buffer window (buffer survives in background).
-   */
-  async closeEditsBuffer(): Promise<void> {
-    await this.execLua(`return require("pi-nvim").close_edits_buffer()`);
+  async ping(timeoutMs: number = 3_000): Promise<boolean> {
+    try {
+      await this.call("nvim_get_api_info", [], timeoutMs);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -243,22 +276,25 @@ export class NeovimClient {
     const [type, msgid] = msg as [number, number, unknown?, unknown?];
 
     if (type === RESPONSE) {
-      const pending = this.pending.get(msgid);
-      if (pending) {
+      const entry = this.pending.get(msgid);
+      if (entry) {
         this.pending.delete(msgid);
+        // Clear the timeout timer
+        if (entry.timer) clearTimeout(entry.timer);
         const [, , error, result] = msg as [number, number, unknown, unknown];
         if (error) {
-          pending.reject(new Error(String(error)));
+          entry.reject(new Error(String(error)));
         } else {
-          pending.resolve(result);
+          entry.resolve(result);
         }
       }
     }
   }
 
   private rejectAll(err: Error): void {
-    for (const [, pending] of this.pending) {
-      pending.reject(err);
+    for (const [id, entry] of this.pending) {
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.reject(err);
     }
     this.pending.clear();
   }

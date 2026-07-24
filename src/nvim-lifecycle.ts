@@ -218,7 +218,7 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
       // Quit the Neovim we spawned
       if (client?.isConnected) {
         try {
-          await client.command("qa!");
+          await client.command("qa!", 3_000);
         } catch {
           // Best effort
         }
