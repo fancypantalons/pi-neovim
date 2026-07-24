@@ -373,6 +373,7 @@ function M.telescope_edits()
       value = entry,
       display = entry.filename,
       ordinal = entry.filename,
+      path = entry.filename, -- required for file previewer
     }
   end
 
@@ -384,6 +385,7 @@ function M.telescope_edits()
         entry_maker = entry_maker,
       }),
       sorter = conf.generic_sorter({}),
+      previewer = conf.file_previewer({}),
       attach_mappings = function(prompt_bufnr, map)
         -- Enter: open the file
         actions.select_default:replace(function()
