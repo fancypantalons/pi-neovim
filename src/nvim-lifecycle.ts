@@ -80,7 +80,25 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
     focus_file?: string;
     focus_line?: number;
   }): Promise<{ content: Array<{ type: string; text: string }>; details: Record<string, unknown> }> {
+    // ── helper: open files/focus whether first connection or subsequent call ──
+    async function openRequestedFiles(p: typeof params) {
+      if (!client?.isConnected) return;
+      if (p.files && p.files.length > 0) {
+        for (const file of p.files) {
+          try { await client.openFile(file); } catch { /* may not exist yet */ }
+        }
+      }
+      if (p.focus_file) {
+        try {
+          await client.openFile(p.focus_file);
+          if (p.focus_line) await client.setCursor(p.focus_line);
+        } catch { /* best effort */ }
+      }
+    }
+
     if (status === "connected") {
+      // Already connected — still open any requested files.
+      await openRequestedFiles(params);
       return {
         content: [{ type: "text", text: "Neovim is already open and connected." }],
         details: { status: "connected" },
@@ -160,25 +178,7 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
     }
 
     // 7. Open requested files
-    if (params.files && params.files.length > 0) {
-      for (const file of params.files) {
-        try {
-          await client.openFile(file);
-        } catch {
-          // File might not exist yet — that's fine
-        }
-      }
-    }
-    if (params.focus_file) {
-      try {
-        await client.openFile(params.focus_file);
-        if (params.focus_line) {
-          await client.setCursor(params.focus_line);
-        }
-      } catch {
-        // Best effort
-      }
-    }
+    await openRequestedFiles(params);
 
     status = "connected";
 
