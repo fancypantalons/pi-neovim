@@ -198,7 +198,7 @@ local function ensure_edits_buf()
     for _, win in ipairs(vim.api.nvim_list_wins()) do
       local buf = vim.api.nvim_win_get_buf(win)
       if buf ~= bufnr then
-        local bt = vim.bo[buf].bt or ""
+        local bt = vim.bo[buf].buftype or ""
         if bt ~= "nofile" and bt ~= "terminal" and bt ~= "quickfix" then
           return win
         end
