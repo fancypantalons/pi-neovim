@@ -186,7 +186,7 @@ end
 **User commands in Neovim:**
 - `:PiPrompt <text>` — Send a prompt to pi.
 - `:PiSendSelection` — Send visually selected text as context to pi.
-- `:PiQuickfix` — Refresh the modified-files quickfix list.
+- `:PiEdits` — Show the agent-modified files buffer
 
 ## Tool API Design
 

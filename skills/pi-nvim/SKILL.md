@@ -42,7 +42,7 @@ Query or refresh the list of modified files shown in the pi-edits buffer.
 
 ## What the User Sees in Neovim
 
-- **Pi-edits buffer** (opened with `:PiEdits` or `:PiQuickfix`) showing every file you've written or edited
+- **Pi-edits buffer** (opened with `:PiEdits`) showing every file you've written or edited
 - **Enter** on any entry opens that file
 - **d** on any entry opens a side-by-side diff (git HEAD vs current)
 - **r** requests a refresh from pi
@@ -59,5 +59,5 @@ When the user saves a file in Neovim (`:w`), the extension automatically detects
 
 - Call `open_in_nvim` early when doing multi-file work so the user can follow along
 - After calling `write` or `edit`, the edits buffer updates silently in the background — no need to call `nvim_quickfix` each time
-- Tell the user they can run `:PiEdits` (or `:PiQuickfix` for muscle memory) to view the list
+- Tell the user they can run `:PiEdits` to view the list
 - When the user asks "what did you change?", call `open_in_nvim` so they can browse with the 'd' diff key

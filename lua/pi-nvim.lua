@@ -418,11 +418,6 @@ function M.setup(opts)
     M.show_edits_buffer()
   end, { desc = "Show the pi.dev modified-files buffer" })
 
-  -- Alias: PiQuickfix → same as PiEdits (backward compat)
-  vim.api.nvim_create_user_command("PiQuickfix", function()
-    M.show_edits_buffer()
-  end, { desc = "Show the pi.dev modified-files buffer (alias for :PiEdits)" })
-
   vim.api.nvim_create_user_command("PiStatus", function()
     local info = {
       "pi-nvim status:",

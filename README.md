@@ -11,7 +11,7 @@ Note: This package incorporates a bunch of Neovim Lua right inside it, and injec
 ## Features
 
 - **Automatic context detection** — tmux side-pane or embedded `:terminal`, no configuration needed
-- **Edits buffer** — a custom scratch buffer (`pi://edits`) listing every file the agent modified, isolated from the global quickfix so `:grep` / `:make` / `:vimgrep` never conflict
+- **Edits buffer** — a custom scratch buffer (`pi://edits`) listing every file the agent modified, making for easy navigation and inspection of changed files
 - **Git-aware diffs** — press `d` on any entry for a vertical split showing `git diff HEAD` changes
 - **Two-way editing** — user saves a file in Neovim and the agent is notified with the diff
 - **Reverse commands** — `:PiPrompt`, `:PiSendSelection`, `:PiEdits`, `:PiStatus`
@@ -47,7 +47,7 @@ Once installed, the model calls `open_in_nvim` when it wants to show code in Neo
 
 | Command / Key | Action |
 |--------------|--------|
-| `:PiEdits` (or `:PiQuickfix`) | Open the agent-modified files buffer |
+| `:PiEdits` | Open the agent-modified files buffer |
 | `Enter` (in edits buffer) | Open the file under cursor |
 | `d` (in edits buffer) | Vertical diff split (git HEAD vs current) |
 | `r` (in edits buffer) | Request refresh from pi |

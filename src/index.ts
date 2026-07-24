@@ -34,7 +34,7 @@ export default function (pi: ExtensionAPI) {
   const lifecycle = createNvimLifecycle(pi, luaDir);
   const fileTracker = createFileTracker(lifecycle);
 
-  // Wire up edits refresh handler so Neovim's :PiEdits / :PiQuickfix works
+  // Wire up edits refresh handler so Neovim's :PiEdits works
   lifecycle.setEditsRefreshHandler(() => {
     fileTracker.pushToNeovim().catch(() => {});
   });

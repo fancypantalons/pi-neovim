@@ -205,7 +205,7 @@ async function main() {
 
   assert(":PiPrompt registered", cmds["PiPrompt"] !== undefined, cmds["PiPrompt"]);
   assert(":PiSendSelection registered", cmds["PiSendSelection"] !== undefined);
-  assert(":PiQuickfix registered", cmds["PiQuickfix"] !== undefined);
+  assert(":PiEdits registered", cmds["PiEdits"] !== undefined);
 
   // ─── Phase 7: Test quickfix mappings ────────────────────────────────
   console.log("── Phase 7: Test quickfix mappings ──");
