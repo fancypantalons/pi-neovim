@@ -9,17 +9,27 @@
   "homepage": "https://github.com/brettk/pi-neovim#readme",
   "license": "MIT",
   "scripts": {
-    "test": "tsx test/test-lua-full.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && tsx test/test-lua-full.ts && tsx test/test-lua-injection.ts",
+    "test:lua": "tsx test/test-lua-full.ts",
     "test:injection": "tsx test/test-lua-injection.ts"
   },
   "devDependencies": {
-    "tsx": "^4.19.0"
+    "@earendil-works/pi-coding-agent": "^0.82.0",
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3"
   },
   "pi": {
-    "extensions": ["./src/index.ts"],
-    "skills": ["./skills/pi-nvim"]
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "skills": [
+      "./skills/pi-nvim"
+    ]
   },
   "dependencies": {
-    "@msgpack/msgpack": "^3.1.0"
+    "@msgpack/msgpack": "^3.1.0",
+    "typebox": "^1.3.8"
   }
 }
