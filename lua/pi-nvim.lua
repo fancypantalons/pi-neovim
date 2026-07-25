@@ -62,6 +62,7 @@ local function connect_socket()
       return
     end
     connected = true
+    vim.g.pi_nvim_connected = true
     vim.schedule(function()
       vim.notify("pi-nvim: connected to pi", vim.log.levels.INFO)
     end)
@@ -70,6 +71,8 @@ end
 
 --- Notify pi that Neovim is closing.
 local function on_vim_leave()
+  connected = false
+  vim.g.pi_nvim_connected = false
   send_cmd({ cmd = "pi_exit" })
 end
 
