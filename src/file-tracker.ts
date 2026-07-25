@@ -44,15 +44,25 @@ export function createFileTracker(
    * assistant message content blocks. This scans the content blocks
    * for write/edit tool calls to pre-populate the tracker.
    */
-  function scanSession(entries: Array<{ message?: { role?: string; content?: Array<{ type?: string; name?: string; input?: unknown }> } }>) {
+  function scanSession(
+    entries: Array<{
+      message?: {
+        role?: string;
+        content?: Array<{ type?: string; name?: string; arguments?: unknown; input?: unknown }>;
+      };
+    }>,
+  ) {
     for (const entry of entries) {
       const msg = entry.message;
       if (!msg || msg.role !== "assistant") continue;
       for (const block of msg.content || []) {
         if (block.type === "toolCall" && (block.name === "write" || block.name === "edit")) {
-          const input = block.input as { path?: string } | undefined;
-          if (input?.path) {
-            addFile(input.path, block.name, Date.now());
+          // Assistant tool-call blocks carry their args in `arguments`
+          // (the live `tool_call` event uses `input` instead). Prefer
+          // `arguments`, fall back to `input` for robustness.
+          const args = (block.arguments ?? block.input) as { path?: string } | undefined;
+          if (args?.path) {
+            addFile(args.path, block.name, Date.now());
           }
         }
       }
