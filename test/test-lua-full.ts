@@ -262,6 +262,56 @@ async function main() {
   }
   try { unlinkSync(savePath); } catch { /* ok */ }
 
+  // ─── Phase 11: edits-buffer keymap targeting (line → entry) ───────
+  console.log("── Phase 11: edits buffer keymap targeting ──");
+  // Re-seed two entries and open the buffer in a window so the buffer-local
+  // <CR> mapping is live.
+  const navEntries = [
+    { filename: "/tmp/pi-nvim-nav-a.txt", lnum: 1, col: 1, text: "/tmp/pi-nvim-nav-a.txt | write | 10:00:00" },
+    { filename: "/tmp/pi-nvim-nav-b.txt", lnum: 1, col: 1, text: "/tmp/pi-nvim-nav-b.txt | edit | 10:01:00" },
+  ];
+  writeFileSync(navEntries[0].filename, "a\n");
+  writeFileSync(navEntries[1].filename, "b\n");
+  const nav = await client.execLua(`
+    _pi_nvim.update_edits_buffer(...)
+    _pi_nvim.show_edits_buffer()
+    local target = "${EDITS_BUF_NAME}"
+    local win
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+      if vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w)) == target then win = w end
+    end
+    vim.api.nvim_set_current_win(win)
+    local cr = vim.api.nvim_replace_termcodes("<CR>", true, false, true)
+
+    -- Cursor on the divider (line 2): <CR> must be a no-op (the bug was that
+    -- the multibyte divider slipped past the skip guard and got opened).
+    local buf_count_before = #vim.api.nvim_list_bufs()
+    vim.api.nvim_win_set_cursor(win, { 2, 0 })
+    vim.api.nvim_feedkeys(cr, "x", false)
+    local divider_bufname = vim.api.nvim_buf_get_name(0)
+    local buf_count_after_divider = #vim.api.nvim_list_bufs()
+
+    -- Cursor on the first entry (line 3): <CR> opens that file.
+    vim.api.nvim_set_current_win(win)
+    vim.api.nvim_win_set_cursor(win, { 3, 0 })
+    vim.api.nvim_feedkeys(cr, "x", false)
+    local entry_bufname = vim.api.nvim_buf_get_name(0)
+
+    return {
+      buf_count_before = buf_count_before,
+      buf_count_after_divider = buf_count_after_divider,
+      divider_bufname = divider_bufname,
+      entry_bufname = entry_bufname,
+    }
+  `, [JSON.stringify(navEntries)]) as any;
+  assert("Enter on divider opens no buffer", nav.buf_count_after_divider === nav.buf_count_before,
+    `before=${nav.buf_count_before} after=${nav.buf_count_after_divider}`);
+  assert("Enter on divider keeps focus on the edits buffer", nav.divider_bufname === EDITS_BUF_NAME,
+    `bufname=${nav.divider_bufname}`);
+  assert("Enter on an entry opens that file", typeof nav.entry_bufname === "string" && nav.entry_bufname.endsWith("pi-nvim-nav-a.txt"),
+    `bufname=${nav.entry_bufname}`);
+  for (const e of navEntries) { try { unlinkSync(e.filename); } catch { /* ok */ } }
+
   // ─── Results ──────────────────────────────────────────────────────
   console.log(`\n── Results: ${passed} passed, ${failed} failed ──`);
   client.disconnect();

@@ -5,6 +5,9 @@
 
 local M = {}
 
+-- vim.uv is the preferred handle on Neovim 0.10+; vim.loop is the 0.9 alias.
+local uv = vim.uv or vim.loop
+
 -- ═══════════════════════════════════════════════════════════════════
 -- Internal state
 -- ═══════════════════════════════════════════════════════════════════
@@ -13,10 +16,18 @@ local socket_path = nil
 local pi_pid = nil
 local sock = nil
 local connected = false
+local warned_offline = false -- latch so we warn about a dead socket only once
 
 -- Buffer state
 local edits_buf_name = "pi://edits"
-local last_entries_json = nil -- cached entries for buffer rebuilds
+local HEADER = "pi.dev modified files"
+local DIVIDER = ("─"):rep(21)
+local EMPTY_MSG = "(no modified files tracked yet)"
+local HEADER_LINES = 2 -- header + divider precede the entry rows
+-- Canonical list of tracked entries: { filename, tool, time }. This is the
+-- single source of truth — both the pi://edits buffer and the telescope picker
+-- render from it, so nothing has to parse formatted display text back to data.
+local tracked_entries = {}
 
 -- ═══════════════════════════════════════════════════════════════════
 -- Socket communication (pi → extension)
@@ -25,13 +36,18 @@ local last_entries_json = nil -- cached entries for buffer rebuilds
 --- Send a JSON-line command over the socket to pi.
 local function send_cmd(cmd)
   if not sock or sock:is_closing() or not connected then
-    vim.schedule(function()
-      local msg = "pi-nvim: cannot send — "
-      if not sock then msg = msg .. "no socket"
-      elseif sock:is_closing() then msg = msg .. "socket closing"
-      elseif not connected then msg = msg .. "not connected" end
-      vim.notify(msg, vim.log.levels.WARN)
-    end)
+    -- Disconnected is a normal state (pi may have exited); warn only once per
+    -- disconnect so background senders (BufWritePost, the `r` keymap) don't nag.
+    if not warned_offline then
+      warned_offline = true
+      vim.schedule(function()
+        local msg = "pi-nvim: cannot send — "
+        if not sock then msg = msg .. "no socket"
+        elseif sock:is_closing() then msg = msg .. "socket closing"
+        else msg = msg .. "not connected" end
+        vim.notify(msg, vim.log.levels.WARN)
+      end)
+    end
     return
   end
   local ok, json = pcall(vim.fn.json_encode, cmd)
@@ -43,6 +59,9 @@ local function send_cmd(cmd)
   end
   sock:write(json .. "\n", function(err)
     if err then
+      -- The socket is broken; reflect that so is_connected() stops lying.
+      connected = false
+      vim.g.pi_nvim_connected = false
       vim.schedule(function()
         vim.notify("pi-nvim: write failed: " .. tostring(err), vim.log.levels.ERROR)
       end)
@@ -53,7 +72,7 @@ end
 --- Connect to pi's Unix socket server.
 local function connect_socket()
   if connected then return end
-  sock = vim.loop.new_pipe()
+  sock = uv.new_pipe()
   sock:connect(socket_path, function(err)
     if err then
       vim.schedule(function()
@@ -62,6 +81,7 @@ local function connect_socket()
       return
     end
     connected = true
+    warned_offline = false
     vim.g.pi_nvim_connected = true
     vim.schedule(function()
       vim.notify("pi-nvim: connected to pi", vim.log.levels.INFO)
@@ -71,48 +91,39 @@ end
 
 --- Notify pi that Neovim is closing.
 local function on_vim_leave()
+  -- Send *before* clearing `connected`, otherwise send_cmd short-circuits on
+  -- `not connected` and pi_exit is never actually written.
+  send_cmd({ cmd = "pi_exit" })
   connected = false
   vim.g.pi_nvim_connected = false
-  send_cmd({ cmd = "pi_exit" })
 end
 
 -- ═══════════════════════════════════════════════════════════════════
 -- Edits buffer — a custom scratch buffer replacing the quickfix list
 -- ═══════════════════════════════════════════════════════════════════
 
---- Format a single entry as a tab-separated display line.
---- Produces exactly three tab-separated fields: <filename>\t<tool>\t<time>.
---- The extension supplies entry.text as "path | tool | time"; we split that
---- so the tool and time land in their own columns (telescope_edits reads
---- them as parts[2] and parts[3]).
-local function format_entry(entry)
-  -- entry: { filename, lnum, col, text }
-  local parts = vim.split(entry.text or "", " | ", { plain = true })
-  local tool = parts[2] or ""
-  local time = parts[3] or ""
-  return entry.filename .. "\t" .. tool .. "\t" .. time
-end
-
---- Format all entries into buffer lines.
-local function format_entries(entries)
-  local lines = { "pi.dev modified files", "─────────────────────" }
-  for _, e in ipairs(entries) do
-    lines[#lines + 1] = format_entry(e)
-  end
-  if #entries == 0 then
-    lines[#lines + 1] = "(no modified files tracked yet)"
+--- Render the current tracked entries into buffer lines.
+--- Each entry row is tab-separated: <filename>\t<tool>\t<time>.
+local function render_lines()
+  local lines = { HEADER, DIVIDER }
+  if #tracked_entries == 0 then
+    lines[#lines + 1] = EMPTY_MSG
+  else
+    for _, e in ipairs(tracked_entries) do
+      lines[#lines + 1] = e.filename .. "\t" .. e.tool .. "\t" .. e.time
+    end
   end
   return lines
 end
 
---- Get the filename from a edits-buffer line (tab-separated, first field).
-local function get_filename_from_line(line)
-  if not line or line == "" then return nil end
-  -- Skip header/divider/empty lines
-  if line:match("^pi%.dev ") or line:match("^─+$") or line:match("^%(no ") then
-    return nil
-  end
-  return (vim.split(line, "\t")[1] or ""):gsub("^%s+", ""):gsub("%s+$", "")
+--- Map a 1-based buffer line number to its tracked entry.
+--- Returns nil for the header, divider, or empty-state line — so keymaps that
+--- act on "the file under the cursor" simply no-op there (no fragile text
+--- pattern matching, no risk of opening a buffer named after the divider).
+local function entry_for_line(lnum)
+  local idx = lnum - HEADER_LINES
+  if idx < 1 then return nil end
+  return tracked_entries[idx]
 end
 
 --- Open a vertical git-diff split for the given file.
@@ -127,7 +138,15 @@ local function open_diff_for_file(filepath)
 
   if in_git then
     local root = reporoot[1]
-    local relpath = string.sub(filepath, #root + 2)
+    -- Repo-relative path. Guard the prefix: if filepath isn't under root (e.g.
+    -- symlinked/realpath mismatch), fall back to the basename rather than
+    -- slicing garbage.
+    local relpath
+    if filepath:sub(1, #root + 1) == root .. "/" then
+      relpath = filepath:sub(#root + 2)
+    else
+      relpath = vim.fn.fnamemodify(filepath, ":t")
+    end
 
     -- vert diffsplit creates a new window to the LEFT of the current one.
     -- Layout after split: [LEFT=new: file] [RIGHT=old: original buffer]
@@ -141,7 +160,8 @@ local function open_diff_for_file(filepath)
     vim.cmd("wincmd h")
     vim.cmd("enew!")
     local head_content = vim.fn.systemlist(
-      "git -C " .. vim.fn.shellescape(dir) .. " show HEAD:" .. relpath .. " 2>/dev/null"
+      "git -C " .. vim.fn.shellescape(dir)
+        .. " show " .. vim.fn.shellescape("HEAD:" .. relpath) .. " 2>/dev/null"
     )
     if vim.v.shell_error == 0 then
       vim.api.nvim_buf_set_lines(0, 0, -1, false, head_content)
@@ -211,24 +231,20 @@ local function setup_edits_keymaps(bufnr)
 
   -- <CR>: open file under cursor
   vim.keymap.set("n", "<CR>", function()
-    local cursor = vim.api.nvim_win_get_cursor(0)
-    local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1]
-    local filename = get_filename_from_line(line)
-    if not filename then return end
+    local entry = entry_for_line(vim.api.nvim_win_get_cursor(0)[1])
+    if not entry then return end
     local target = find_target_window()
     if target then vim.api.nvim_set_current_win(target) end
-    vim.cmd("e " .. vim.fn.fnameescape(filename))
+    vim.cmd("e " .. vim.fn.fnameescape(entry.filename))
   end, opts)
 
   -- d: diff current file against git HEAD
   vim.keymap.set("n", "d", function()
-    local cursor = vim.api.nvim_win_get_cursor(0)
-    local line = vim.api.nvim_buf_get_lines(bufnr, cursor[1] - 1, cursor[1], false)[1]
-    local filename = get_filename_from_line(line)
-    if not filename then return end
+    local entry = entry_for_line(vim.api.nvim_win_get_cursor(0)[1])
+    if not entry then return end
     local target = find_target_window()
     if target then vim.api.nvim_set_current_win(target) end
-    open_diff_for_file(filename)
+    open_diff_for_file(entry.filename)
   end, opts)
 
   -- r: request refresh from pi
@@ -290,12 +306,22 @@ end
 --- Called by the pi extension via nvim_exec_lua.
 --- @param json_entries string JSON array of {filename, lnum, col, text}
 function M.update_edits_buffer(json_entries)
-  last_entries_json = json_entries
-
-  local ok, entries = pcall(vim.fn.json_decode, json_entries)
+  local ok, decoded = pcall(vim.fn.json_decode, json_entries)
   if not ok then
     vim.notify("pi-nvim: failed to parse edits entries", vim.log.levels.ERROR)
     return
+  end
+
+  -- Normalize into the canonical model. The extension packs display info into
+  -- `text` as "path | tool | time"; split it into columns once, here.
+  tracked_entries = {}
+  for _, e in ipairs(decoded or {}) do
+    local parts = vim.split(e.text or "", " | ", { plain = true })
+    tracked_entries[#tracked_entries + 1] = {
+      filename = e.filename,
+      tool = parts[2] or "",
+      time = parts[3] or "",
+    }
   end
 
   local bufnr = ensure_edits_buf()
@@ -306,24 +332,13 @@ function M.update_edits_buffer(json_entries)
 
   -- Replace buffer content
   vim.bo[bufnr].modifiable = true
-  local lines = format_entries(entries)
-  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, render_lines())
   vim.bo[bufnr].modifiable = false
 
   -- Restore cursor (clamp to new line count)
   if win then
     local max = vim.api.nvim_buf_line_count(bufnr)
     vim.api.nvim_win_set_cursor(win, { math.min(saved_line, max), 0 })
-  end
-end
-
---- Close the edits buffer window (buffer survives in background).
-function M.close_edits_buffer()
-  local bufnr = find_edits_buf()
-  if not bufnr then return end
-  local win = find_window_for_buf(bufnr)
-  if win then
-    vim.api.nvim_win_close(win, true)
   end
 end
 
@@ -334,7 +349,7 @@ end
 --- Open a telescope picker listing agent-modified files (from the
 --- pi://edits buffer). Enter opens the file, d opens a git diff.
 function M.telescope_edits()
-  local has_telescope, telescope = pcall(require, "telescope")
+  local has_telescope = pcall(require, "telescope")
   if not has_telescope then
     vim.notify("pi-nvim: telescope.nvim is not installed", vim.log.levels.WARN)
     return
@@ -346,31 +361,8 @@ function M.telescope_edits()
   local actions = require("telescope.actions")
   local action_state = require("telescope.actions.state")
 
-  -- Read entries from the pi://edits buffer
-  local bufnr = find_edits_buf()
-  local raw_lines = {}
-  if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-    raw_lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  end
-
-  -- Parse into { filename, tool, time } triples, skipping header lines
-  local entries = {}
-  for _, line in ipairs(raw_lines) do
-    local filename = get_filename_from_line(line)
-    -- Guard: skip anything that isn't a readable file on disk.
-    -- This filters header/divider lines without relying on Lua's
-    -- byte-oriented UTF-8 pattern matching.
-    if filename and vim.fn.filereadable(filename) == 1 then
-      local parts = vim.split(line, "\t")
-      table.insert(entries, {
-        filename = filename,
-        tool = parts[2] or "",
-        time = parts[3] or "",
-      })
-    end
-  end
-
-  if #entries == 0 then
+  -- Read straight from the canonical model — no display-text round-tripping.
+  if #tracked_entries == 0 then
     vim.notify("pi-nvim: no modified files tracked yet", vim.log.levels.INFO)
     return
   end
@@ -388,7 +380,7 @@ function M.telescope_edits()
     .new({}, {
       prompt_title = "pi-nvim modified files",
       finder = finders.new_table({
-        results = entries,
+        results = tracked_entries,
         entry_maker = entry_maker,
       }),
       sorter = conf.generic_sorter({}),
@@ -492,8 +484,10 @@ function M.setup(opts)
   end, { nargs = 1, desc = "Send a prompt to pi.dev" })
 
   vim.api.nvim_create_user_command("PiSendSelection", function()
-    local _, ls, cs = unpack(vim.fn.getpos("'<"))
-    local _, le, ce = unpack(vim.fn.getpos("'>"))
+    -- getpos returns { bufnum, lnum, col, off }; we send whole lines, so we
+    -- only need the line numbers.
+    local ls = vim.fn.getpos("'<")[2]
+    local le = vim.fn.getpos("'>")[2]
     local lines = vim.api.nvim_buf_get_lines(0, ls - 1, le, false)
     local text = table.concat(lines, "\n")
     local file = vim.fn.expand("%:p")
