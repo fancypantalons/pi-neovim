@@ -13,7 +13,7 @@ Note: This package incorporates a bunch of Neovim Lua right inside it, and injec
 - **Automatic context detection** — tmux side-pane or embedded `:terminal`, no configuration needed
 - **Edits buffer** — a custom scratch buffer (`pi://edits`) listing every file the agent modified, making for easy navigation and inspection of changed files
   - Open a file buy selecting and pressing enter; open a diff by pressing 'd'
-- **Telescope integration** — `:Telescope pi_nvim` opens a picker with file preview; `Enter` opens, `d` diffs. Works automatically if [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) is installed
+- **Telescope integration** — `:Telescope pi_nvim` opens a picker with file preview that lists the files the agent has modified since the start of the session; `Enter` opens, `d` diffs. Works automatically if [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) is installed
 - **Two-way editing** — user saves a file in Neovim and the agent is notified with the diff
 - **Reverse commands** — `:PiPrompt`, `:PiSendSelection`, `:PiEdits`, `:PiStatus`
 - **Event-driven** — file tracking updates automatically when the model calls `write` or `edit`; no manual tool calls needed
@@ -46,16 +46,16 @@ Once installed, the model calls `open_in_nvim` when it wants to show code in Neo
 
 ### In Neovim
 
-| Command / Key | Action |
-|--------------|--------|
-| `:PiEdits` | Open the agent-modified files buffer |
-| `Enter` (in edits buffer) | Open the file under cursor |
-| `d` (in edits buffer) | Vertical diff split (git HEAD vs current) |
-| `r` (in edits buffer) | Request refresh from pi |
-| `q` (in edits buffer) | Close the edits window |
-| `:PiPrompt <text>` | Send a prompt to pi |
-| `:PiSendSelection` | Send visually selected text to pi |
-| `:PiStatus` | Show connection status |
+| Command / Key             | Action                                                      |
+|---------------------------|-------------------------------------------------------------|
+| `:PiEdits`                | Open the agent-modified files buffer                        |
+| `Enter` (in edits buffer) | Open the file under cursor                                  |
+| `d` (in edits buffer)     | Vertical diff split (git HEAD vs current)                   |
+| `r` (in edits buffer)     | Request refresh from pi                                     |
+| `q` (in edits buffer)     | Close the edits window                                      |
+| `:PiPrompt <text>`        | Send a prompt to pi                                         |
+| `:PiSendSelection`        | Send visually selected text to pi with an associated prompt |
+| `:PiStatus`               | Show connection status                                      |
 
 ### Telescope picker
 

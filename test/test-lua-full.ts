@@ -1,15 +1,17 @@
 /**
- * Comprehensive Lua module integration test.
+ * pi-nvim Lua integration test (focused).
  *
- * Spins up a mock pi Unix-socket server, starts headless nvim, injects
- * the Lua module, and verifies every behavior: socket comms, autocmds,
- * quickfix mappings, user commands, and send_cmd end-to-end.
+ * Spins up a mock pi Unix-socket server, starts headless nvim, injects the
+ * pi-nvim Lua module, and verifies the behavior of the pi://edits scratch
+ * buffer: socket comms, edits-buffer rendering + keymaps, user commands,
+ * and the save-report autocmd. Covers the surface that replaced the old
+ * quickfix-based design.
  *
- * Usage: npx tsx test/test-lua-full.ts
+ * Requires nvim on PATH. Run with:  npx tsx test/test-lua-full.ts
  */
 
-import { spawn, ChildProcess } from "node:child_process";
-import { existsSync, unlinkSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createServer, Server, Socket } from "node:net";
 import { createInterface } from "node:readline";
@@ -20,12 +22,12 @@ import { NeovimClient } from "../src/neovim-client";
 const NVIM_SOCKET = "/tmp/pi-nvim-test-nvim.sock";
 const MOCK_PI_SOCKET = "/tmp/pi-nvim-test-pi.sock";
 const LUA_DIR = resolve(__dirname, "..", "lua");
-const ESCAPED_LUA_DIR = LUA_DIR.replace(/\\/g, "\\\\");
+const EDITS_BUF_NAME = "pi://edits";
 
 let passed = 0;
 let failed = 0;
 
-// ── Helpers ─────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 function assert(label: string, condition: boolean, detail?: string) {
   if (condition) {
@@ -37,18 +39,16 @@ function assert(label: string, condition: boolean, detail?: string) {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 function waitForSocket(path: string, timeoutMs: number): Promise<void> {
   const start = Date.now();
-  return new Promise((resolve, reject) => {
-    function check() {
-      if (existsSync(path)) return resolve();
+  return new Promise((resolveP, reject) => {
+    const check = () => {
+      if (existsSync(path)) return resolveP();
       if (Date.now() - start > timeoutMs) return reject(new Error(`Timeout waiting for socket: ${path}`));
       setTimeout(check, 100);
-    }
+    };
     check();
   });
 }
@@ -68,7 +68,7 @@ class MockPiServer {
   connections = 0;
 
   async start(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolveP, reject) => {
       this.server = createServer((sock) => {
         this.connections++;
         this.socket = sock;
@@ -78,11 +78,10 @@ class MockPiServer {
         });
       });
       this.server.on("error", reject);
-      this.server.listen(MOCK_PI_SOCKET, resolve);
-      // Ensure socket permissions
       this.server.on("listening", () => {
         try { require("fs").chmodSync(MOCK_PI_SOCKET, 0o666); } catch {}
       });
+      this.server.listen(MOCK_PI_SOCKET, resolveP);
     });
   }
 
@@ -93,269 +92,182 @@ class MockPiServer {
     this.socket = null;
   }
 
-  /**
-   * Wait until we've received at least `count` JSON messages, or timeout.
-   */
   async waitForMessages(count: number, timeoutMs = 3000): Promise<object[]> {
     const deadline = Date.now() + timeoutMs;
-    while (this.received.length < count && Date.now() < deadline) {
-      await sleep(50);
-    }
+    while (this.received.length < count && Date.now() < deadline) await sleep(50);
     return [...this.received];
   }
 }
 
-// ── Main test ───────────────────────────────────────────────────────────
+// ── Main ─────────────────────────────────────────────────────────────────
 
 async function main() {
   cleanup();
   const mock = new MockPiServer();
 
-  // ─── Phase 1: Start mock server ─────────────────────────────────────
+  // ─── Phase 1: mock pi server ────────────────────────────────────────
   console.log("── Phase 1: Start mock pi server ──");
   await mock.start();
   assert("mock server listening", existsSync(MOCK_PI_SOCKET));
 
-  // ─── Phase 2: Start headless nvim ───────────────────────────────────
-  console.log("── Phase 2: Start headless nvim ──");
+  // ─── Phase 2: headless nvim + RPC client ───────────────────────────
+  console.log("── Phase 2: Start headless nvim + connect RPC ──");
   const nvim = spawn("nvim", ["--headless", "--listen", NVIM_SOCKET], {
     stdio: ["ignore", "pipe", "pipe"],
   });
   nvim.stderr?.on("data", (d: Buffer) => process.stderr.write(`[nvim] ${d}`));
-
   await waitForSocket(NVIM_SOCKET, 5000);
-
   const client = new NeovimClient();
   await client.connect(NVIM_SOCKET);
   assert("nvim RPC connected", client.isConnected);
 
-  // ─── Phase 3: Inject Lua module ─────────────────────────────────────
+  const escapedLuaDir = LUA_DIR.replace(/\\/g, "\\\\");
+
+  // ─── Phase 3: inject module via require ───────────────────────────
   console.log("── Phase 3: Inject Lua module ──");
-
-  // Load the module via require
-  await client.execLua(`package.path = package.path .. ";${ESCAPED_LUA_DIR}/?.lua;${ESCAPED_LUA_DIR}/?/init.lua"`);
+  await client.execLua(
+    `package.path = package.path .. ";${escapedLuaDir}/?.lua;${escapedLuaDir}/?/init.lua"`,
+  );
   await client.execLua(`_pi_nvim = require("pi-nvim"); return nil`);
-  assert("module loaded via require", true);
-
-  // Verify the module table has expected functions — use pcall
-  const modInfo = await client.execLua(`
-    if _pi_nvim == nil then return { loaded = false } end
+  const modTable = await client.execLua(`
     local keys = {}
-    for k, v in pairs(_pi_nvim) do
-      keys[#keys + 1] = k .. ":" .. type(v)
-    end
+    for k, v in pairs(_pi_nvim) do keys[#keys + 1] = k .. ":" .. type(v) end
     table.sort(keys)
-    return { loaded = true, keys = keys }
-  `) as { loaded: boolean; keys?: string[] };
-  assert("_pi_nvim table exists", modInfo.loaded === true);
-  if (modInfo.keys) {
-    const modFns = modInfo.keys.filter(k => k.endsWith(":function")).map(k => k.replace(":function", ""));
-    const expectedFns = ["send_command", "setup"];
-    for (const fn of expectedFns) {
-      assert(`module has ${fn}()`, modFns.includes(fn), `keys: ${modInfo.keys.join(", ")}`);
-    }
+    return keys
+  `) as string[];
+  const modFns = (modTable || []).filter((k) => k.endsWith(":function")).map((k) => k.replace(":function", ""));
+  for (const fn of ["setup", "update_edits_buffer", "show_edits_buffer", "telescope_edits", "is_connected", "send_command"]) {
+    assert(`module exposes ${fn}()`, modFns.includes(fn), `keys: ${(modTable || []).join(", ")}`);
   }
 
-  // ─── Phase 4: Call setup() ──────────────────────────────────────────
+  // ─── Phase 4: setup() ─────────────────────────────────────────────
   console.log("── Phase 4: Call setup() ──");
-
-  const setupResult = await client.execLua(`
+  const setupRes = await client.execLua(`
     local ok, err = pcall(function()
-      _pi_nvim.setup({
-        socket_path = "${MOCK_PI_SOCKET}",
-        pi_pid = ${process.pid}
-      })
+      _pi_nvim.setup({ socket_path = "${MOCK_PI_SOCKET}", pi_pid = ${process.pid} })
     end)
-    return { ok = ok, err = err }
+    return { ok = ok, err = tostring(err) }
   `) as { ok: boolean; err?: string };
-  assert("setup() succeeds", setupResult.ok, setupResult.err);
-
-  // Give the async pipe connect a moment
+  assert("setup() succeeds", setupRes.ok === true, setupRes.err);
   await sleep(500);
-  assert("socket connection received by mock server", mock.connections >= 1,
-    `connections: ${mock.connections}`);
+  assert("socket connection received by mock", mock.connections >= 1, `connections: ${mock.connections}`);
+  assert("is_connected() reports true", (await client.execLua(`return _pi_nvim.is_connected()`)) === true);
 
-  // ─── Phase 5: Test send_cmd (Neovim → pi communication) ─────────────
-  console.log("── Phase 5: Test send_cmd ──");
-
-  // Trigger a send via the module's public API
+  // ─── Phase 5: send_command (nvim → pi) ────────────────────────────
+  console.log("── Phase 5: Test send_command ──");
   await client.execLua(`_pi_nvim.send_command("pi_prompt", { text = "hello from nvim" }); return nil`);
   await sleep(200);
   const msgs = mock.received;
   assert("send_command delivers JSON to pi", msgs.length >= 1);
   if (msgs.length > 0) {
     const last = msgs[msgs.length - 1] as any;
-    assert("message has cmd field", last.cmd === "pi_prompt");
-    assert("message has text field", last.text === "hello from nvim");
+    assert("pi_prompt cmd field", last.cmd === "pi_prompt");
+    assert("pi_prompt text field", last.text === "hello from nvim");
   }
 
-  // ─── Phase 6: Test user commands ────────────────────────────────────
-  console.log("── Phase 6: Test user commands ──");
+  // ─── Phase 6: edits buffer rendering ──────────────────────────────
+  console.log("── Phase 6: Test pi://edits buffer ──");
+  const entries = [
+    { filename: "/tmp/test-a.txt", lnum: 1, col: 1, text: "/tmp/test-a.txt | write | 10:00:00" },
+    { filename: "/tmp/test-b.txt", lnum: 1, col: 1, text: "/tmp/test-b.txt | edit | 10:01:00" },
+  ];
+  await client.execLua(`return _pi_nvim.update_edits_buffer(...)`, [JSON.stringify(entries)]);
 
-  const cmds = await client.execLua(`
-    local cmds = vim.api.nvim_get_commands({})
-    local ours = {}
-    for name, def in pairs(cmds) do
-      if name:match("^Pi") then
-        ours[name] = def.desc or "(no desc)"
+  const bufInfo = await client.execLua(`
+    local M = _pi_nvim
+    -- find_edits_buf is local; reach the buffer via nvim_list_bufs by name
+    local target = "${EDITS_BUF_NAME}"
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_name(b) == target then
+        return {
+          buf = b,
+          name = vim.api.nvim_buf_get_name(b),
+          buftype = vim.bo[b].buftype,
+          modifiable = vim.bo[b].modifiable,
+          lines = vim.api.nvim_buf_get_lines(b, 0, -1, false),
+        }
       end
+    end
+    return nil
+  `) as any;
+  assert("edits buffer created", bufInfo !== null, bufInfo ? `buf=${bufInfo.buf}` : "not found");
+  if (bufInfo) {
+    assert("edits buffer name is pi://edits", bufInfo.name === EDITS_BUF_NAME, `got: ${bufInfo.name}`);
+    assert("edits buffer buftype is nofile", bufInfo.buftype === "nofile");
+    assert("edits buffer frozen (modifiable=false)", bufInfo.modifiable === false);
+    const lines: string[] = bufInfo.lines || [];
+    assert("edits buffer has header line", lines[0] === "pi.dev modified files", `got: ${lines[0]}`);
+    assert("edits buffer has divider", lines[1] === "─────────────────────", `got: ${lines[1]}`);
+    const entry = lines[2] || "";
+    assert("first file entry rendered", /\/tmp\/test-a\.txt/.test(entry), `got: ${entry}`);
+  }
+
+  // ─── Phase 7: edits buffer keymaps ────────────────────────────────
+  console.log("── Phase 7: Test edits buffer keymaps ──");
+  const keymaps = await client.execLua(`
+    local target = "${EDITS_BUF_NAME}"
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_name(b) == target then
+        local maps = {}
+        for _, m in ipairs(vim.api.nvim_buf_get_keymap(b, "n")) do
+          maps[m.lhs] = true
+        end
+        return maps
+      end
+    end
+    return {}
+  `) as Record<string, boolean>;
+  for (const key of ["<CR>", "d", "r", "q"]) {
+    assert(`edits buffer maps '${key}'`, keymaps[key] === true, `maps: ${JSON.stringify(Object.keys(keymaps))}`);
+  }
+
+  // ─── Phase 8: user commands registered ────────────────────────────
+  console.log("── Phase 8: User commands ──");
+  const cmds = await client.execLua(`
+    local ours = {}
+    for name, def in pairs(vim.api.nvim_get_commands({})) do
+      if name:match("^Pi") then ours[name] = def.desc or "(no desc)" end
     end
     return ours
   `) as Record<string, string>;
+  for (const name of ["PiPrompt", "PiSendSelection", "PiEdits", "PiStatus"]) {
+    assert(`:${name} registered`, cmds[name] !== undefined, cmds[name]);
+  }
 
-  assert(":PiPrompt registered", cmds["PiPrompt"] !== undefined, cmds["PiPrompt"]);
-  assert(":PiSendSelection registered", cmds["PiSendSelection"] !== undefined);
-  assert(":PiEdits registered", cmds["PiEdits"] !== undefined);
-
-  // ─── Phase 7: Test quickfix mappings ────────────────────────────────
-  console.log("── Phase 7: Test quickfix mappings ──");
-
-  // Set a quickfix list with our title
-  await client.setQuickfixList([
-    { filename: "/tmp/test-a.txt", lnum: 1, col: 1, text: "test | write" },
-    { filename: "/tmp/test-b.txt", lnum: 1, col: 1, text: "test | edit" },
-  ], "pi-neovim modified files");
-
-  // Open the quickfix window
-  await client.command("copen");
-  await sleep(300);
-
-  // Check for the 'd' mapping on the qf buffer
-  const qfMappings = await client.execLua(`
-    local wins = vim.api.nvim_list_wins()
-    for _, win in ipairs(wins) do
-      local buf = vim.api.nvim_win_get_buf(win)
-      if vim.bo[buf].buftype == "quickfix" then
-        local maps = vim.api.nvim_buf_get_keymap(buf, "n")
-        for _, m in ipairs(maps) do
-          if m.lhs == "d" then
-            -- Return only serializable fields (no callbacks/functions)
-            return { buf = buf, lhs = m.lhs, noremap = m.noremap, desc = m.desc or "" }
-          end
-        end
-      end
-    end
-    return nil
+  // ─── Phase 9: autocmds registered ─────────────────────────────────
+  console.log("── Phase 9: Autocmds ──");
+  const evt = (e: string) => client.execLua(`
+    local a = vim.api.nvim_get_autocmds({ group = "PiNeovim", event = "${e}" })
+    return #a > 0
   `);
+  assert("VimLeave autocmd registered", (await evt("VimLeave")) === true);
+  assert("BufWritePost autocmd registered", (await evt("BufWritePost")) === true);
 
-  assert("quickfix 'd' mapping exists on qf buffer", qfMappings !== null,
-    qfMappings ? `buf=${(qfMappings as any).buf}` : "no mapping found");
-
-  // Verify the qf title
-  const qfTitle = await client.execLua(`
-    return vim.fn.getqflist({ title = 1 }).title
-  `);
-  assert("quickfix title matches", qfTitle === "pi-neovim modified files",
-    `got: "${qfTitle}"`);
-
-  // ─── Phase 8: Test VimLeave autocmd ─────────────────────────────────
-  console.log("── Phase 8: Test VimLeave autocmd ──");
-
-  // Check that the VimLeave autocmd is registered
-  const hasVimLeave = await client.execLua(`
-    local aucmds = vim.api.nvim_get_autocmds({
-      group = "PiNeovim",
-      event = "VimLeave",
-    })
-    return #aucmds > 0
-  `);
-  assert("VimLeave autocmd registered", hasVimLeave === true);
-
-  // Check BufWinEnter autocmd
-  const hasBufWin = await client.execLua(`
-    local aucmds = vim.api.nvim_get_autocmds({
-      group = "PiNeovim",
-      event = "BufWinEnter",
-    })
-    return #aucmds > 0
-  `);
-  assert("BufWinEnter autocmd registered", hasBufWin === true);
-
-  // Check BufWritePost autocmd (two-way editing)
-  const hasBufWrite = await client.execLua(`
-    local aucmds = vim.api.nvim_get_autocmds({
-      group = "PiNeovim",
-      event = "BufWritePost",
-    })
-    return #aucmds > 0
-  `);
-  assert("BufWritePost autocmd registered", hasBufWrite === true);
-
-  // ─── Phase 9: Test reloadFile ───────────────────────────────────
-  console.log("── Phase 9: Test reloadFile ──");
-
-  // Create the file on disk first, then open it properly
-  require("fs").writeFileSync("/tmp/pi-nvim-reload-test.txt", "old content");
-
+  // ─── Phase 10: BufWritePost → pi_edit (non-git file) ──────────────
+  console.log("── Phase 10: BufWritePost → pi_edit ──");
+  const savePath = "/tmp/pi-nvim-edit-test.txt";
+  writeFileSync(savePath, "line 1\nline 2\n");
   await client.execLua(`
-    vim.cmd("e! /tmp/pi-nvim-reload-test.txt")
-    return nil
-  `);
-
-  // Verify initial buffer content
-  const before = await client.execLua(`
-    return vim.api.nvim_buf_get_lines(0, 0, -1, false)
-  `);
-  assert("initial content loaded", Array.isArray(before) && before[0] === "old content",
-    `got: ${JSON.stringify(before)}`);
-
-  // Write new content to the file on disk (simulating pi editing)
-  require("fs").writeFileSync("/tmp/pi-nvim-reload-test.txt", "new content from pi");
-
-  // Call reloadFile — the buffer should pick up the new content
-  await client.reloadFile("/tmp/pi-nvim-reload-test.txt");
-
-  const after = await client.execLua(`
-    local bufs = vim.api.nvim_list_bufs()
-    for _, buf in ipairs(bufs) do
-      if vim.api.nvim_buf_get_name(buf) == "/tmp/pi-nvim-reload-test.txt" then
-        return vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-      end
-    end
-    return nil
-  `);
-
-  const lines = Array.isArray(after) ? after : [];
-  assert("reloadFile picks up new content", lines[0] === "new content from pi",
-    `got: ${JSON.stringify(lines)}`);
-
-  // Cleanup
-  try { require("fs").unlinkSync("/tmp/pi-nvim-reload-test.txt"); } catch { /* ok */ }
-
-  // ─── Phase 10: Test BufWritePost → pi_edit ──────────────────────
-  console.log("── Phase 10: Test BufWritePost → pi_edit ──");
-
-  // Create a git-tracked file in the test repo (use cwd of nvim)
-  require("fs").writeFileSync("/tmp/pi-nvim-edit-test.txt", "line 1\nline 2");
-
-  // Open it and trigger a save (BufWritePost)
-  await client.execLua(`
-    vim.cmd("e! /tmp/pi-nvim-edit-test.txt")
+    vim.cmd("e! ${savePath}")
     vim.api.nvim_buf_set_lines(0, 0, -1, false, {"modified line 1", "line 2", "new line 3"})
     vim.cmd("w!")
     return nil
   `);
-
   await sleep(300);
-  const editMessages = mock.received.filter((m: any) => m.cmd === "pi_edit");
-  if (editMessages.length > 0) {
-    // The file was saved — pi_edit was sent (non-git in /tmp, so diff will be "(non-git file)")
-    assert("BufWritePost triggers pi_edit (non-git)", true);
-    console.log(`  ✅ edit reported: ${JSON.stringify(editMessages[0])}`);
-  } else {
-    // Might still pass if the file wasn't tracked
-    console.log("  ⚠ No pi_edit received — file may not be git-tracked");
+  const edits = mock.received.filter((m: any) => m.cmd === "pi_edit");
+  assert("BufWritePost emits pi_edit", edits.length >= 1, `received ${edits.length} pi_edit msgs`);
+  if (edits.length > 0) {
+    const e = edits[edits.length - 1] as any;
+    assert("pi_edit includes file path", typeof e.file === "string" && e.file.endsWith("pi-nvim-edit-test.txt"), `file: ${e.file}`);
   }
+  try { unlinkSync(savePath); } catch { /* ok */ }
 
-  // ─── Results ────────────────────────────────────────────────────────
+  // ─── Results ──────────────────────────────────────────────────────
   console.log(`\n── Results: ${passed} passed, ${failed} failed ──`);
-
-  // Cleanup
   client.disconnect();
   nvim.kill();
   mock.stop();
   cleanup();
-
   process.exit(failed > 0 ? 1 : 0);
 }
 

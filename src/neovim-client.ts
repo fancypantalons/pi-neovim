@@ -1,4 +1,4 @@
-import { encode, decode } from "@msgpack/msgpack";
+import { encode, Decoder } from "@msgpack/msgpack";
 import { connect, Socket } from "node:net";
 import { once } from "node:events";
 import { resolve as resolvePath } from "node:path";
@@ -239,34 +239,24 @@ export class NeovimClient {
   private onData(chunk: Buffer): void {
     this.buffer = Buffer.concat([this.buffer, chunk]);
 
-    // Try to decode complete msgpack messages
-    while (this.buffer.length > 0) {
-      try {
-        const decoded = decode(this.buffer) as unknown;
-        // We can only track consumed bytes if we decode the first value
-        // Since msgpack is self-delimiting, a successful decode gives us
-        // one complete message. We need to figure out how many bytes it consumed.
-        const consumed = this.consumedBytes(this.buffer);
-        this.buffer = this.buffer.subarray(consumed);
-        this.handleMessage(decoded);
-      } catch {
-        // Incomplete message (or malformed) — wait for more data
-        break;
-      }
-    }
-  }
+    const dec = new Decoder();
+    let consumed = 0;
 
-  /**
-   * Determine how many bytes were consumed by the last successful decode.
-   * We do this by encoding the decoded value back and measuring.
-   */
-  private consumedBytes(buf: Buffer): number {
     try {
-      const decoded = decode(buf);
-      const reEncoded = encode(decoded);
-      return reEncoded.byteLength;
+      for (const msg of dec.decodeMulti(this.buffer)) {
+        this.handleMessage(msg);
+        consumed = dec.pos; // record the boundary after each complete message
+      }
     } catch {
-      return buf.length; // fallback — shouldn't happen after successful decode
+      // decodeMulti threw — either a genuinely incomplete trailing message
+      // (BoundsError from DataView) or garbled data. In either case dec.pos
+      // may have advanced past the last correctly-decoded complete message,
+      // so use `consumed` (the last successful-yield position) rather than
+      // dec.pos directly.
+    }
+
+    if (consumed > 0) {
+      this.buffer = this.buffer.subarray(consumed);
     }
   }
 
