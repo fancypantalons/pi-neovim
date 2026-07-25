@@ -81,12 +81,16 @@ end
 -- ═══════════════════════════════════════════════════════════════════
 
 --- Format a single entry as a tab-separated display line.
+--- Produces exactly three tab-separated fields: <filename>\t<tool>\t<time>.
+--- The extension supplies entry.text as "path | tool | time"; we split that
+--- so the tool and time land in their own columns (telescope_edits reads
+--- them as parts[2] and parts[3]).
 local function format_entry(entry)
   -- entry: { filename, lnum, col, text }
-  -- Display: <filename>\t<tool>\t<time>
-  -- Use the text field which already contains "file | tool | time"
-  local tool_time = entry.text or ""
-  return entry.filename .. "\t" .. tool_time
+  local parts = vim.split(entry.text or "", " | ", { plain = true })
+  local tool = parts[2] or ""
+  local time = parts[3] or ""
+  return entry.filename .. "\t" .. tool .. "\t" .. time
 end
 
 --- Format all entries into buffer lines.
@@ -458,7 +462,7 @@ function M.setup(opts)
           for _, line in ipairs(diff_lines) do
             if line:match("^%+") and not line:match("^%+%+%+") then
               added = added + 1
-            elseif line:match("^- ") and not line:match("^---") then
+            elseif line:match("^%-") and not line:match("^%-%-%-") then
               removed = removed + 1
             end
           end
