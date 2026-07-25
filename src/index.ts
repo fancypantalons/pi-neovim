@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createNvimLifecycle } from "./nvim-lifecycle";
 import { createFileTracker } from "./file-tracker";
+import { createGitWatcher, type GitSnapshot } from "./git-watcher";
 
 // Resolve the lua/ directory at factory init time so the lifecycle
 // doesn't need to rely on __dirname (unreliable in pi's compiled
@@ -33,6 +34,10 @@ export default function (pi: ExtensionAPI) {
   // ── State ──────────────────────────────────────────────────────────
   const lifecycle = createNvimLifecycle(pi, luaDir);
   const fileTracker = createFileTracker(lifecycle);
+  const gitWatcher = createGitWatcher(pi.exec.bind(pi));
+  // Working-tree signature captured at turn_start, compared at turn_end to
+  // attribute file changes to the turn (backstop for non-write/edit changes).
+  let turnBaseline: Promise<GitSnapshot | null> | null = null;
 
   // Wire up edits refresh handler so Neovim's :PiEdits works
   lifecycle.setEditsRefreshHandler(() => {
@@ -165,6 +170,42 @@ export default function (pi: ExtensionAPI) {
       // promises with their own .catch() handlers.
       fileTracker.onToolResult(event.toolName, event);
     }
+  });
+
+  // ── Git backstop ───────────────────────────────────────────────────
+  // The write/edit hooks above give immediate, mid-turn feedback. But the
+  // agent can also change files via bash (`sed -i`, `mv`, redirects, …),
+  // which those hooks never see. So we bracket each turn with a git
+  // working-tree signature: snapshot at turn_start, compare at turn_end.
+  // Files whose content changed during the turn are attributed to the agent;
+  // files that went back to matching HEAD are pruned (reverts). Bracketing
+  // per-turn keeps the attribution window small, so a user editing files
+  // mid-turn is the only (unlikely) source of false positives.
+  pi.on("turn_start", (_event, ctx) => {
+    turnBaseline = gitWatcher.snapshot(ctx.cwd).catch(() => null);
+  });
+
+  pi.on("turn_end", async (event, ctx) => {
+    const baseline = turnBaseline;
+    turnBaseline = null;
+    // Nothing ran that could touch files — skip the git work entirely.
+    if (!baseline || event.toolResults.length === 0) return;
+
+    const [before, after] = await Promise.all([
+      baseline,
+      gitWatcher.snapshot(ctx.cwd).catch(() => null),
+    ]);
+    if (!before || !after) return; // not a git repo, or a git error
+
+    const { changed, reverted } = gitWatcher.delta(before, after);
+    if (!fileTracker.applyGitDelta(changed, reverted)) return;
+
+    // Reflect on-disk state in Neovim: reload changed files (bash edits aren't
+    // reloaded by the write/edit path) and reverted ones.
+    for (const p of [...changed, ...reverted]) {
+      lifecycle.reloadFile(p).catch(() => {});
+    }
+    await fileTracker.pushToNeovim().catch(() => {});
   });
 
   pi.on("session_shutdown", async () => {

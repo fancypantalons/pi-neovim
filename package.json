@@ -10,10 +10,11 @@
   "license": "MIT",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && tsx test/test-lua-full.ts && tsx test/test-lua-injection.ts && tsx test/test-editor.ts",
+    "test": "npm run typecheck && tsx test/test-lua-full.ts && tsx test/test-lua-injection.ts && tsx test/test-editor.ts && tsx test/test-git-watcher.ts",
     "test:lua": "tsx test/test-lua-full.ts",
     "test:injection": "tsx test/test-lua-injection.ts",
-    "test:editor": "tsx test/test-editor.ts"
+    "test:editor": "tsx test/test-editor.ts",
+    "test:git": "tsx test/test-git-watcher.ts"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.82.0",

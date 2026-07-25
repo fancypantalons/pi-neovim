@@ -108,6 +108,36 @@ export function createFileTracker(
     }
   }
 
+  /**
+   * Reconcile the tracked set against a git-detected delta (see git-watcher).
+   * `changed` files are added/refreshed; `reverted` files are removed. This is
+   * the backstop that catches changes made outside write/edit (e.g. `sed -i`)
+   * and prunes files the agent reverted. Returns true if anything changed.
+   */
+  function applyGitDelta(changed: string[], reverted: string[]): boolean {
+    const now = Date.now();
+    let mutated = false;
+
+    for (const p of changed) {
+      const resolved = resolvePath(p);
+      const existing = files.get(resolved);
+      // Preserve a specific write/edit label if we already have one; otherwise
+      // record it as a generic change (mechanism unknown — could be bash).
+      files.set(resolved, {
+        path: resolved,
+        toolName: existing?.toolName ?? "change",
+        timestamp: now,
+      });
+      mutated = true;
+    }
+
+    for (const p of reverted) {
+      if (files.delete(resolvePath(p))) mutated = true;
+    }
+
+    return mutated;
+  }
+
   async function pushToNeovim() {
     if (!lifecycle.isReady()) return;
     await lifecycle.pushEditsBuffer(toEditsEntries());
@@ -119,6 +149,7 @@ export function createFileTracker(
     scanSession,
     onToolCall,
     onToolResult,
+    applyGitDelta,
     pushToNeovim,
   };
 }

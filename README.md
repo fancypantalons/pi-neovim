@@ -17,6 +17,7 @@ Note: This package incorporates a bunch of Neovim Lua right inside it, and injec
 - **Two-way editing** — user saves a file in Neovim and the agent is notified with the diff
 - **Reverse commands** — `:PiPrompt`, `:PiSendSelection`, `:PiEdits`, `:PiStatus`
 - **Event-driven** — file tracking updates automatically when the model calls `write` or `edit`; no manual tool calls needed
+- **Git-aware backstop** — each turn is bracketed with a git working-tree diff, so files the agent changes via `bash` (`sed`, `mv`, redirects, …) are still tracked, and files reverted back to `HEAD` are dropped from the list
 
 ## Requirements
 

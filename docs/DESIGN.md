@@ -73,6 +73,7 @@ pi-neovim/
 │   ├── nvim-server.ts     # Unix socket server (nvim → pi)
 │   ├── nvim-backend.ts    # Mode strategy: tmux (spawn pane) vs embedded ($NVIM host)
 │   ├── file-tracker.ts    # Modified file tracking + edits buffer
+│   ├── git-watcher.ts     # Per-turn git working-tree diff (backstop for bash-driven changes)
 │   ├── types.ts           # Shared types (EditsEntry)
 │   └── nvim-lifecycle.ts  # Orchestrates backend + editor + reverse server
 ├── lua/
@@ -127,13 +128,23 @@ Registers:
 - Responses back to Neovim (optional acknowledgements).
 - **Connection lifecycle:** Listens for socket `'close'` events. If the socket closes without receiving a `pi_exit` message (crash/kill), it treats it as an unexpected disconnect. In both cases, the extension updates its internal state to "disconnected" and cleans up.
 
-### 4. File Tracker (`src/file-tracker.ts`)
+### 4. File Tracker (`src/file-tracker.ts`) + Git Watcher (`src/git-watcher.ts`)
 
-- In-memory set of `{path, toolName, timestamp}` entries.
+The tracker is an in-memory set of `{path, toolName, timestamp}` entries, fed by
+two complementary sources:
+
+**Tool hooks (low latency):**
 - On `session_start`: scans `ctx.sessionManager.getEntries()` for `write`/`edit` tool calls (reading each tool-call block's `arguments`), rebuilds list.
-- On `tool_call` (write/edit with path): adds entry, pushes the updated edits buffer to Neovim.
-- Formats edits entries: `path | tool | timestamp` with `lnum:1, col:1`.
-- Exports `toEditsEntries(): EditsEntry[]` for push to Neovim.
+- On `tool_call` (write/edit with path): adds entry, pushes the updated edits buffer to Neovim immediately — feedback lands before/while the tool runs.
+
+**Git backstop (completeness):** `write`/`edit` hooks miss changes made through
+`bash` (`sed -i`, `mv`, redirects, external tools), because the bash tool result
+reports no touched-file list. So the git watcher brackets each turn:
+- `turn_start`: `snapshot(cwd)` records a content signature (`git status --porcelain -z` + batched `git hash-object`) for every file dirty vs HEAD.
+- `turn_end` (only when the turn ran tools): snapshot again, `delta(before, after)` classifies each file. `changed` (new signature) is attributed to the turn; `reverted` (back to matching HEAD) is pruned. `fileTracker.applyGitDelta()` applies both, then affected buffers are reloaded and the edits buffer is pushed.
+- Uses a content signature rather than the path list so it also catches a further edit to an *already-dirty* file. Degrades to hooks-only outside a git repo.
+
+Formats edits entries: `path | tool | timestamp` with `lnum:1, col:1`. Exports `toEditsEntries(): EditsEntry[]` for push to Neovim.
 
 ### 5. Neovim Lifecycle (`src/nvim-lifecycle.ts`) + Backend (`src/nvim-backend.ts`)
 
