@@ -1,10 +1,9 @@
 import { encode, decodeMultiStream } from "@msgpack/msgpack";
 import { connect, Socket } from "node:net";
 import { once } from "node:events";
-import { resolve as resolvePath } from "node:path";
 
 /**
- * Minimal msgpack-RPC client for Neovim.
+ * Minimal, protocol-only msgpack-RPC client for Neovim.
  *
  * Neovim's protocol uses msgpack arrays:
  *   [type, msgid, method, args]
@@ -14,6 +13,9 @@ import { resolve as resolvePath } from "node:path";
  * We primarily use notifications (type 2) since most nvim_* API calls
  * don't need response handling. For calls that need a return value,
  * we use requests (type 0).
+ *
+ * This class knows nothing about pi-nvim — the domain operations (edits
+ * buffer, file open/reload, Lua module injection) live in {@link NvimEditor}.
  */
 
 const REQUEST = 0;
@@ -150,27 +152,8 @@ export class NeovimClient {
   }
 
   /**
-   * Update the pi-edits scratch buffer content. Non-critical: short timeout.
-   */
-  async updateEditsBuffer(
-    entries: Array<{
-      filename: string;
-      lnum: number;
-      col: number;
-      text: string;
-    }>,
-  ): Promise<void> {
-    const json = JSON.stringify(entries);
-    await this.execLua(
-      `return require("pi-nvim").update_edits_buffer([==[${json}]==])`,
-      [],
-      5_000,
-    );
-  }
-
-  /**
    * Ping Neovim with a trivial API call. Returns true if responsive.
-   * Used by the heartbeat to detect silent disconnects.
+   * Used to detect silent disconnects.
    */
   async ping(timeoutMs: number = 3_000): Promise<boolean> {
     try {
@@ -179,51 +162,6 @@ export class NeovimClient {
     } catch {
       return false;
     }
-  }
-
-  /**
-   * Open a file in the current window.
-   * Resolves to absolute path so it works regardless of Neovim's cwd.
-   */
-  async openFile(filepath: string): Promise<void> {
-    const abs = resolvePath(filepath);
-    await this.execLua(`vim.cmd("e " .. vim.fn.fnameescape([==[${abs}]==]))`);
-  }
-
-  /**
-   * Jump to a specific line in the current buffer.
-   */
-  async setCursor(line: number, col: number = 0): Promise<void> {
-    // nvim_win_set_cursor(window, [row, col]) — both args go in the args
-    // array. (Previously `0` was passed as the args value and `[line, col]`
-    // as the timeout, so the cursor never moved.)
-    await this.call("nvim_win_set_cursor", [0, [line, col]]);
-  }
-
-  /**
-   * Force-reload a file in all buffers that have it open, but only if
-   * the buffer has no unsaved changes (respects user's edits).
-   * Resolves to absolute path so buffer-name comparison is reliable.
-   */
-  async reloadFile(filepath: string): Promise<void> {
-    const abs = resolvePath(filepath);
-    await this.execLua(`
-      local target = [==[${abs}]==]
-      for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-        if vim.api.nvim_buf_is_valid(buf) then
-          local name = vim.api.nvim_buf_get_name(buf)
-          if name == target then
-            local modified = vim.api.nvim_get_option_value("modified", { buf = buf })
-            if not modified then
-              vim.api.nvim_buf_call(buf, function()
-                vim.cmd("edit!")
-              end)
-            end
-          end
-        end
-      end
-      return nil
-    `);
   }
 
   /**

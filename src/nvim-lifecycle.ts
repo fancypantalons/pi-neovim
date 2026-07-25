@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { NeovimClient } from "./neovim-client";
+import { NvimEditor } from "./nvim-editor";
 import {
   NvimServer,
   NvimCommand,
@@ -7,58 +7,53 @@ import {
   PiEditCommand,
   PiSelectCommand,
 } from "./nvim-server";
+import {
+  createBackend,
+  detectMode,
+  nvimBackSocketPath,
+  type NvimBackend,
+  type NvimMode,
+} from "./nvim-backend";
 import type { EditsEntry } from "./types";
 import { existsSync, unlinkSync } from "node:fs";
-import { execSync } from "node:child_process";
 
-const SOCKET_PREFIX = "/tmp/pi-nvim";
 const PID = process.pid;
 
-function nvimSocketPath(): string {
-  return `${SOCKET_PREFIX}-${PID}.sock`;
-}
-
-function nvimBackSocketPath(): string {
-  return `${SOCKET_PREFIX}-back-${PID}.sock`;
-}
-
-export type { EditsEntry };
+export type { EditsEntry, NvimMode };
+export { detectMode };
 
 export type ConnectionStatus = "disconnected" | "connected";
 
-/**
- * Operating mode of the extension.
- *
- * - "tmux":     pi.dev runs in a tmux pane. The extension spawns a separate
- *               Neovim instance in a right-side tmux pane via tmux split-window.
- *               Used when pi.dev is launched from a tmux session.
- *
- * - "embedded": pi.dev runs inside a Neovim :terminal buffer. The extension
- *               communicates directly with the host Neovim via the $NVIM socket
- *               that Neovim exports to all terminal children. No tmux commands.
- *               Detected automatically when $NVIM is set.
- */
-export type NvimMode = "tmux" | "embedded";
+interface OpenParams {
+  files?: string[];
+  focus_file?: string;
+  focus_line?: number;
+}
 
-/** Detect the operating mode from the environment. */
-export function detectMode(): NvimMode {
-  return process.env.NVIM ? "embedded" : "tmux";
+interface OpenResult {
+  content: Array<{ type: "text"; text: string }>;
+  details: Record<string, unknown>;
+}
+
+function errorResult(text: string, err?: unknown): OpenResult {
+  return {
+    content: [{ type: "text", text }],
+    details: err !== undefined ? { status: "error", error: String(err) } : { status: "error" },
+  };
 }
 
 /**
- * Manages the full lifecycle of the Neovim instance:
- * spawn, connect, Lua injection, reverse server, shutdown.
+ * Manages the full lifecycle of the Neovim integration: acquiring the
+ * instance (delegated to the mode-specific {@link NvimBackend}), connecting,
+ * Lua injection, the reverse-command server, and shutdown.
  */
 export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
-  const mode: NvimMode = detectMode();
-  // In embedded mode, the host Neovim's RPC socket is available via $NVIM.
-  // In tmux mode, we spawn a fresh Neovim with --listen to create our own.
-  const hostNvimSocket: string | null = mode === "embedded" ? (process.env.NVIM || null) : null;
+  const backend: NvimBackend = createBackend();
+  const mode = backend.mode;
 
   let status: ConnectionStatus = "disconnected";
-  let client: NeovimClient | null = null;
+  let editor: NvimEditor | null = null;
   let server: NvimServer | null = null;
-  let tmuxPaneId: string | null = null;
   let onRefreshEdits: (() => void) | null = null;
 
   function setEditsRefreshHandler(handler: () => void) {
@@ -73,31 +68,28 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
     return status;
   }
 
-  /**
-   * Open Neovim: in tmux mode, spawn a new Neovim in a tmux split pane.
-   * In embedded mode, connect to the host Neovim via $NVIM socket.
-   */
-  async function open(params: {
-    files?: string[];
-    focus_file?: string;
-    focus_line?: number;
-  }): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
-    // ── helper: open files/focus whether first connection or subsequent call ──
-    async function openRequestedFiles(p: typeof params) {
-      if (!client?.isConnected) return;
-      if (p.files && p.files.length > 0) {
-        for (const file of p.files) {
-          try { await client.openFile(file); } catch { /* may not exist yet */ }
-        }
-      }
-      if (p.focus_file) {
-        try {
-          await client.openFile(p.focus_file);
-          if (p.focus_line) await client.setCursor(p.focus_line);
-        } catch { /* best effort */ }
+  /** Open the requested files / focus, whether first connection or subsequent call. */
+  async function openRequestedFiles(p: OpenParams) {
+    if (!editor?.isConnected) return;
+    if (p.files && p.files.length > 0) {
+      for (const file of p.files) {
+        try { await editor.openFile(file); } catch { /* may not exist yet */ }
       }
     }
+    if (p.focus_file) {
+      try {
+        await editor.openFile(p.focus_file);
+        if (p.focus_line) await editor.setCursor(p.focus_line);
+      } catch { /* best effort */ }
+    }
+  }
 
+  /**
+   * Open Neovim: the backend acquires the RPC socket (spawning in tmux mode,
+   * or returning the host $NVIM socket in embedded mode); the rest of the
+   * setup path is identical for both modes.
+   */
+  async function open(params: OpenParams): Promise<OpenResult> {
     if (status === "connected") {
       // Already connected — still open any requested files.
       await openRequestedFiles(params);
@@ -108,88 +100,50 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
     }
 
     let nvimSocket: string;
-
-    if (mode === "tmux") {
-      // ── tmux mode: spawn a fresh Neovim instance ──────────────────
-      nvimSocket = nvimSocketPath();
-      const targetPane = process.env.TMUX_PANE || "";
-      const spawnCmd = `tmux split-window -h -l 50% ${targetPane ? "-t " + targetPane : ""} -P -F '#{pane_id}' nvim --listen ${nvimSocket}`;
-
-      try {
-        tmuxPaneId = execSync(spawnCmd, { encoding: "utf-8", timeout: 5000 }).trim();
-      } catch (err: any) {
-        return {
-          content: [{ type: "text", text: `Failed to spawn Neovim: ${err.message || err}` }],
-          details: { status: "error", error: String(err) },
-        };
-      }
-
-      // Wait for the Neovim socket to appear
-      await waitForSocket(nvimSocket, 5000);
-    } else {
-      // ── embedded mode: connect to the host Neovim socket ──────────
-      if (!hostNvimSocket) {
-        return {
-          content: [{ type: "text", text: "Embedded mode detected ($NVIM set) but socket path is empty." }],
-          details: { status: "error" },
-        };
-      }
-      nvimSocket = hostNvimSocket;
-    }
-
-    // Connect msgpack-RPC client (common path for both modes)
-    client = new NeovimClient();
     try {
-      await client.connect(nvimSocket);
+      nvimSocket = await backend.acquireSocket();
     } catch (err: any) {
-      return {
-        content: [{ type: "text", text: `Failed to connect to Neovim RPC: ${err.message || err}` }],
-        details: { status: "error", error: String(err) },
-      };
+      return errorResult(`Failed to start Neovim: ${err.message || err}`, err);
     }
 
-    // 4. Inject Lua support module via require(). Directory resolved
-    //    at factory init since __dirname is unreliable in pi's runtime.
+    // Connect the RPC transport (common path for both modes).
+    editor = new NvimEditor();
     try {
-      const escaped = luaDir.replace(/\\/g, "\\\\");
-      await client.execLua(`package.path = package.path .. ";${escaped}/?.lua;${escaped}/?/init.lua"`);
-      await client.execLua(`require("pi-nvim"); return nil`);
+      await editor.connect(nvimSocket);
     } catch (err: any) {
-      return {
-        content: [{ type: "text", text: `Failed to inject Lua module: ${err.message || err}` }],
-        details: { status: "error", error: String(err) },
-      };
+      return errorResult(`Failed to connect to Neovim RPC: ${err.message || err}`, err);
     }
 
-    // 5. Start the reverse-command server FIRST so the socket exists
-    //    when the Lua module's setup() tries to connect.
+    // Inject the Lua support module via require(). luaDir was resolved at
+    // factory init since __dirname is unreliable in pi's runtime.
+    try {
+      await editor.injectModule(luaDir);
+    } catch (err: any) {
+      return errorResult(`Failed to inject Lua module: ${err.message || err}`, err);
+    }
+
+    // Start the reverse-command server FIRST so the socket exists when the
+    // Lua module's setup() tries to connect back.
     const backSocket = nvimBackSocketPath();
     server = new NvimServer(backSocket);
     await server.start(handleNvimCommand);
 
-    // 6. Now call setup — the socket is ready for connection
+    // Now call setup — the back-channel socket is ready for connection.
     try {
-      await client.execLua(
-        `return require("pi-nvim").setup({ socket_path = "${backSocket}", pi_pid = ${PID} })`,
-      );
+      await editor.setup(backSocket, PID);
     } catch (err: any) {
-      return {
-        content: [{ type: "text", text: `Failed to setup Lua module: ${err.message || err}` }],
-        details: { status: "error", error: String(err) },
-      };
+      return errorResult(`Failed to setup Lua module: ${err.message || err}`, err);
     }
 
-    // 7. Open requested files
     await openRequestedFiles(params);
 
     status = "connected";
 
-    const modeLabel = mode === "embedded" ? `host Neovim (${nvimSocket})` : "right tmux pane";
     return {
       content: [
         {
           type: "text",
-          text: `Connected to ${modeLabel}. RPC established. Lua module injected. Back-channel server listening.`,
+          text: `Connected to ${backend.connectionLabel(nvimSocket)}. RPC established. Lua module injected. Back-channel server listening.`,
         },
       ],
       details: {
@@ -201,68 +155,35 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
     };
   }
 
-  /**
-   * Push the edits list to Neovim's scratch buffer.
-   */
+  /** Push the edits list to Neovim's scratch buffer. */
   async function pushEditsBuffer(entries: EditsEntry[]): Promise<void> {
-    if (!client || !client.isConnected) return;
-    await client.updateEditsBuffer(entries);
+    if (!editor?.isConnected) return;
+    await editor.updateEditsBuffer(entries);
   }
 
   /**
-   * Shut down the integration.
-   *
-   * In tmux mode: quit the spawned Neovim and kill its tmux pane.
-   * In embedded mode: disconnect only — the host Neovim must stay alive.
+   * Shut down the integration. The backend tears down whatever it spawned
+   * (in embedded mode that's nothing — the host Neovim stays alive).
    */
   async function shutdown(): Promise<void> {
-    if (mode === "tmux") {
-      // Quit the Neovim we spawned
-      if (client?.isConnected) {
-        try {
-          await client.command("qa!", 3_000);
-        } catch {
-          // Best effort
-        }
-      }
-
-      // Kill the tmux pane we spawned
-      if (tmuxPaneId) {
-        try {
-          execSync(`tmux kill-pane -t ${tmuxPaneId}`, { timeout: 3000 });
-        } catch {
-          // Best effort
-        }
-      }
-    }
-    // In embedded mode: just disconnect — never kill the host Neovim.
-
+    await backend.teardown(editor);
     cleanup();
   }
 
-  /**
-   * Handle disconnect from Neovim (user closed it, or crashed).
-   */
+  /** Handle disconnect from Neovim (user closed it, or crashed). */
   function handleDisconnect(_reason: "user_closed" | "crashed" | "unknown"): void {
     cleanup();
   }
 
   function cleanup(): void {
-    client?.disconnect();
+    editor?.disconnect();
     server?.stop();
-    client = null;
+    editor = null;
     server = null;
-    tmuxPaneId = null;
     status = "disconnected";
 
-    // Clean up socket files we created.
-    // In tmux mode: remove both the --listen socket and the back-channel socket.
-    // In embedded mode: only remove the back-channel socket (the host socket is
-    // owned by the parent Neovim, not us).
-    const socketsToClean = mode === "tmux"
-      ? [nvimSocketPath(), nvimBackSocketPath()]
-      : [nvimBackSocketPath()];
-    for (const sock of socketsToClean) {
+    // Remove the socket files this backend owns.
+    for (const sock of backend.ownedSockets()) {
       try {
         if (existsSync(sock)) unlinkSync(sock);
       } catch {
@@ -317,8 +238,8 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
   }
 
   async function reloadFile(filepath: string): Promise<void> {
-    if (!client?.isConnected) return;
-    await client.reloadFile(filepath);
+    if (!editor?.isConnected) return;
+    await editor.reloadFile(filepath);
   }
 
   return {
@@ -332,27 +253,6 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
     getStatus,
     getMode: () => mode,
   };
-}
-
-// ── helpers ────────────────────────────────────────────────────────────
-
-/**
- * Poll for a Unix socket file to appear.
- */
-function waitForSocket(path: string, timeoutMs: number): Promise<void> {
-  const start = Date.now();
-  return new Promise((resolve, reject) => {
-    function check() {
-      if (existsSync(path)) {
-        resolve();
-      } else if (Date.now() - start > timeoutMs) {
-        reject(new Error(`Timeout waiting for socket: ${path}`));
-      } else {
-        setTimeout(check, 100);
-      }
-    }
-    check();
-  });
 }
 
 // NOTE: No module-level singleton. The extension factory is re-invoked on
