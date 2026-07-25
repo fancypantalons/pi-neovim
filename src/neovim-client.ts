@@ -1,4 +1,4 @@
-import { encode, Decoder } from "@msgpack/msgpack";
+import { encode, decodeMultiStream } from "@msgpack/msgpack";
 import { connect, Socket } from "node:net";
 import { once } from "node:events";
 import { resolve as resolvePath } from "node:path";
@@ -34,7 +34,6 @@ export class NeovimClient {
       timer: ReturnType<typeof setTimeout> | null;
     }
   >();
-  private buffer = Buffer.alloc(0);
   private connected = false;
 
   /**
@@ -44,7 +43,6 @@ export class NeovimClient {
     if (this.connected) return;
 
     this.socket = connect(socketPath);
-    this.socket.on("data", (chunk: Buffer) => this.onData(chunk));
     this.socket.on("close", () => {
       this.connected = false;
       this.rejectAll(new Error("Neovim socket closed"));
@@ -56,6 +54,19 @@ export class NeovimClient {
 
     await once(this.socket, "connect");
     this.connected = true;
+
+    // Consume the socket as a msgpack stream. decodeMultiStream handles all
+    // partial-message buffering across chunk boundaries internally, so there's
+    // no manual framing to get wrong. The loop ends when the socket closes.
+    this.readLoop(this.socket).catch(() => {
+      /* socket closed or decode error — 'close'/'error' handlers do cleanup */
+    });
+  }
+
+  private async readLoop(socket: Socket): Promise<void> {
+    for await (const msg of decodeMultiStream(socket)) {
+      this.handleMessage(msg);
+    }
   }
 
   get isConnected(): boolean {
@@ -108,20 +119,16 @@ export class NeovimClient {
     args: unknown[] = [],
     timeoutMs?: number,
   ): Promise<unknown> {
-    try {
-      const result = await this.request(method, args, timeoutMs);
-      // Neovim returns [error, result] for API calls
-      if (Array.isArray(result) && result.length === 2) {
-        const [err, val] = result;
-        if (err !== null && err !== undefined) {
-          throw new Error(`nvim error: ${JSON.stringify(err)}`);
-        }
-        return val;
+    const result = await this.request(method, args, timeoutMs);
+    // Neovim returns [error, result] for API calls
+    if (Array.isArray(result) && result.length === 2) {
+      const [err, val] = result;
+      if (err !== null && err !== undefined) {
+        throw new Error(`nvim error: ${JSON.stringify(err)}`);
       }
-      return result;
-    } finally {
-      // no-op: error already thrown above
+      return val;
     }
+    return result;
   }
 
   /**
@@ -187,7 +194,10 @@ export class NeovimClient {
    * Jump to a specific line in the current buffer.
    */
   async setCursor(line: number, col: number = 0): Promise<void> {
-    await this.call("nvim_win_set_cursor", 0, [line, col]);
+    // nvim_win_set_cursor(window, [row, col]) — both args go in the args
+    // array. (Previously `0` was passed as the args value and `[line, col]`
+    // as the timeout, so the cursor never moved.)
+    await this.call("nvim_win_set_cursor", [0, [line, col]]);
   }
 
   /**
@@ -236,30 +246,6 @@ export class NeovimClient {
     this.socket.write(packed);
   }
 
-  private onData(chunk: Buffer): void {
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-
-    const dec = new Decoder();
-    let consumed = 0;
-
-    try {
-      for (const msg of dec.decodeMulti(this.buffer)) {
-        this.handleMessage(msg);
-        consumed = dec.pos; // record the boundary after each complete message
-      }
-    } catch {
-      // decodeMulti threw — either a genuinely incomplete trailing message
-      // (BoundsError from DataView) or garbled data. In either case dec.pos
-      // may have advanced past the last correctly-decoded complete message,
-      // so use `consumed` (the last successful-yield position) rather than
-      // dec.pos directly.
-    }
-
-    if (consumed > 0) {
-      this.buffer = this.buffer.subarray(consumed);
-    }
-  }
-
   private handleMessage(msg: unknown): void {
     if (!Array.isArray(msg)) return;
 
@@ -282,7 +268,7 @@ export class NeovimClient {
   }
 
   private rejectAll(err: Error): void {
-    for (const [id, entry] of this.pending) {
+    for (const entry of this.pending.values()) {
       if (entry.timer) clearTimeout(entry.timer);
       entry.reject(err);
     }
