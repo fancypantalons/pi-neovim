@@ -39,6 +39,17 @@ export default function (pi: ExtensionAPI) {
     fileTracker.pushToNeovim().catch(() => {});
   });
 
+  // Open (or attach to) Neovim and, once connected, push the current edits
+  // list so already-modified files show immediately. Shared by the tool,
+  // the /nvim command, and the embedded-mode auto-connect on session_start.
+  async function openAndPush(params: Parameters<typeof lifecycle.open>[0]) {
+    const result = await lifecycle.open(params);
+    if (lifecycle.isReady()) {
+      await fileTracker.pushToNeovim();
+    }
+    return result;
+  }
+
   // ── Tool: open_in_nvim ─────────────────────────────────────────────
   pi.registerTool({
     name: "open_in_nvim",
@@ -63,12 +74,7 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const result = await lifecycle.open(params);
-      // Push quickfix after opening so modified files show immediately
-      if (lifecycle.isReady()) {
-        await fileTracker.pushToNeovim();
-      }
-      return result;
+      return openAndPush(params);
     },
   });
 
@@ -116,15 +122,11 @@ export default function (pi: ExtensionAPI) {
         await fileTracker.pushToNeovim();
         ctx.ui.notify("Neovim edits refreshed", "info");
       } else {
-        const result = await lifecycle.open({});
+        const result = await openAndPush({});
         ctx.ui.notify(
           `Neovim: ${(result.content[0] as any).text}`,
           "info",
         );
-        // Push quickfix so already-modified files show immediately
-        if (lifecycle.isReady()) {
-          await fileTracker.pushToNeovim();
-        }
       }
     },
   });
@@ -137,10 +139,8 @@ export default function (pi: ExtensionAPI) {
     // The host is already running (pi.dev lives inside its :terminal),
     // so there's no reason to wait for the model to call open_in_nvim.
     if (lifecycle.getMode() === "embedded" && !lifecycle.isReady()) {
-      const result = await lifecycle.open({});
-      if (lifecycle.isReady()) {
-        await fileTracker.pushToNeovim().catch(() => {});
-      } else {
+      const result = await openAndPush({});
+      if (!lifecycle.isReady()) {
         // Report connection failure so the user can see what went wrong
         const detail = result.details?.error || (result.content[0] as any)?.text || "unknown error";
         pi.sendMessage({
