@@ -12,10 +12,10 @@ Note: This package incorporates a bunch of Neovim Lua right inside it, and injec
 
 - **Automatic context detection** — tmux side-pane or embedded `:terminal`, no configuration needed
 - **Edits buffer** — a custom scratch buffer (`pi://edits`) listing every file the agent modified, making for easy navigation and inspection of changed files
-- **Git-aware diffs** — press `d` on any entry for a vertical split showing `git diff HEAD` changes
+  - Open a file buy selecting and pressing enter; open a diff by pressing 'd'
+- **Telescope integration** — `:Telescope pi_nvim` opens a picker with file preview; `Enter` opens, `d` diffs. Works automatically if [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) is installed
 - **Two-way editing** — user saves a file in Neovim and the agent is notified with the diff
 - **Reverse commands** — `:PiPrompt`, `:PiSendSelection`, `:PiEdits`, `:PiStatus`
-- **Telescope integration** — `:Telescope pi_nvim` opens a picker with file preview; `Enter` opens, `d` diffs. Works automatically if [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) is installed
 - **Event-driven** — file tracking updates automatically when the model calls `write` or `edit`; no manual tool calls needed
 
 ## Requirements
