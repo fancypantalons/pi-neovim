@@ -20,6 +20,12 @@ import { NeovimClient } from "../src/neovim-client";
 const SOCKET = "/tmp/pi-nvim-test-lua.sock";
 const LUA_PATH = resolve(__dirname, "..", "lua", "pi-nvim.lua");
 
+let failed = 0;
+function fail(msg: string) {
+  console.error(`❌ ${msg}`);
+  failed++;
+}
+
 async function main() {
   // Clean up stale socket
   if (existsSync(SOCKET)) {
@@ -94,13 +100,17 @@ async function main() {
     console.error(`❌ execLua(no return) failed: ${err.message}`);
   }
 
-  // 7. THE REAL TEST: inject the actual pi-nvim.lua source
-  console.log("\n── Test 4: execLua(pi-nvim.lua) [THE REAL TEST] ──");
+  // 7. Inject the raw module source. This is EXPECTED to fail: the module
+  //    ends with `return M`, and M is a table of functions which msgpack
+  //    cannot serialize ("Cannot convert given Lua type"). This is exactly
+  //    why the extension loads via require() (Test 5) instead. Informational
+  //    only — not counted as a failure.
+  console.log("\n── Test 4: execLua(raw source) [expected to fail — see Test 5] ──");
   try {
     const result = await client.execLua(luaSource);
-    console.log(`✅ execLua(pi-nvim.lua) = ${JSON.stringify(result)}`);
+    console.log(`   raw execLua returned = ${JSON.stringify(result)}`);
   } catch (err: any) {
-    console.error(`❌ execLua(pi-nvim.lua) failed: ${err.message}`);
+    console.log(`   (expected) raw execLua rejected: ${err.message}`);
   }
 
   // 8. Try loading as a module instead of raw exec
@@ -112,10 +122,18 @@ async function main() {
     await client.execLua(`
       package.path = package.path .. ";${escapedDir}/?.lua;${escapedDir}/?/init.lua"
     `);
-    const result = await client.execLua(`return pcall(require, "pi-nvim")`);
+    // nvim_exec_lua returns only the first value of a multi-return, so ask
+    // for an explicit ok/err pair instead of returning pcall directly.
+    const result = await client.execLua(`
+      local ok, err = pcall(require, "pi-nvim")
+      return { ok = ok, err = tostring(err) }
+    `) as { ok: boolean; err?: string };
     console.log(`✅ require("pi-nvim") pcall = ${JSON.stringify(result)}`);
+    if (!result || result.ok !== true) {
+      fail(`require("pi-nvim") did not succeed: ${result?.err}`);
+    }
   } catch (err: any) {
-    console.error(`❌ require("pi-nvim") failed: ${err.message}`);
+    fail(`require("pi-nvim") failed: ${err.message}`);
   }
 
   // 9. Test actually running setup (requires a socket server)
@@ -132,11 +150,16 @@ async function main() {
           pi_pid = 99999
         })
       end)
-      return { ok = ok, err = err }
-    `);
+      return { ok = ok, err = tostring(err) }
+    `) as { ok: boolean; err?: string };
     console.log(`✅ setup() pcall = ${JSON.stringify(result)}`);
+    // setup() must not throw even when the pi socket is unreachable —
+    // connect failures are handled asynchronously, not by raising.
+    if (!result || result.ok !== true) {
+      fail(`setup() raised instead of degrading gracefully: ${result?.err}`);
+    }
   } catch (err: any) {
-    console.error(`❌ setup() failed: ${err.message}`);
+    fail(`setup() failed: ${err.message}`);
   }
 
   // Cleanup
@@ -144,7 +167,8 @@ async function main() {
   client.disconnect();
   nvim.kill();
   try { unlinkSync(SOCKET); } catch { /* ok */ }
-  console.log("Done.");
+  console.log(`\nDone. ${failed} failure(s).`);
+  process.exit(failed > 0 ? 1 : 0);
 }
 
 async function waitForSocket(path: string, timeoutMs: number): Promise<void> {
