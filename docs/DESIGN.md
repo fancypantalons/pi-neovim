@@ -56,7 +56,7 @@ Mode is auto-detected via the `$NVIM` environment variable (set by Neovim in ter
 | **Lifecycle** | Session-persistent | One Neovim connection per pi session. Buffers, quickfix, undo history survive across turns. In embedded mode: disconnect on shutdown but never kill the host. In tmux mode: closes spawned Neovim on `session_shutdown` or `pi_exit`. |
 | **Communication** | Dual-channel msgpack + JSON | pi→nvim uses msgpack-RPC (Neovim's native protocol). nvim→pi uses a Unix socket server in the extension (JSON protocol). Both modes use the same channels — only the socket paths differ. |
 | **Editing** | Full two-way with auto-diff | User edits in Neovim are diffed automatically and reported to pi. Pi can incorporate user changes into its model of the codebase. |
-| **Quickfix** | Auto-updating modified files | Tracks `write`/`edit` tool calls. Quickfix list pushes to Neovim on every change. Pre-populated from session history at startup. |
+| **Edits buffer** | Auto-updating modified files | Tracks `write`/`edit` tool calls. The `pi://edits` scratch buffer is pushed to Neovim on every change. Pre-populated from session history at startup. (Replaces the original global quickfix list — see the Edits Buffer section.) |
 | **Tmux** | Required for tmux mode only | When running in a tmux session, the extension uses `tmux split-window -h` to create the right pane. In embedded mode, no tmux commands are issued — the host Neovim is already the user's editor. |
 | **Distribution** | npm pi-package, git-installed | `pi install git:github.com/user/pi-neovim`. Self-contained with runtime deps in `package.json`. |
 
@@ -70,7 +70,7 @@ pi-neovim/
 │   ├── index.ts           # Extension entry point
 │   ├── neovim-client.ts   # msgpack-RPC client (pi → nvim)
 │   ├── nvim-server.ts     # Unix socket server (nvim → pi)
-│   ├── file-tracker.ts    # Modified file tracking + quickfix
+│   ├── file-tracker.ts    # Modified file tracking + edits buffer
 │   └── nvim-lifecycle.ts  # Spawn, connect, inject Lua, cleanup
 ├── lua/
 │   └── pi-nvim.lua        # Lua support module (injected into Neovim)
@@ -89,10 +89,10 @@ Registers:
   - Parameters: optional `files` array to open initially, optional `focus` boolean.
   - Execute: checks state, spawns Neovim via tmux, establishes connections, returns summary.
 - **State tracking:** Maintains `connected | disconnected` status. Transitions to `disconnected` on graceful exit (`pi_exit` message), unexpected socket close, or `session_shutdown`.
-- **Tool: `nvim_quickfix`** — The model queries or refreshes the modified-file quickfix list.
+- **Tool: `nvim_quickfix`** — The model queries or refreshes the modified-file edits buffer. (The tool name is retained for compatibility; the underlying store is the `pi://edits` buffer, not the quickfix list.)
 - **Command: `/nvim`** — User can manually open/refresh from the pi prompt.
 - **Event hooks:**
-  - `tool_call` (write/edit): track modified files, push quickfix update.
+  - `tool_call` (write/edit): track modified files, push edits-buffer update.
   - `session_start`: scan session entries for pre-existing write/edit operations.
   - `session_shutdown`: close Neovim and clean up sockets.
   - `tool_result`: hook for reporting nvim-sourced diffs back to the model.
@@ -101,12 +101,12 @@ Registers:
 
 - Connects to Neovim's msgpack-RPC socket (`--listen /tmp/pi-nvim-<PID>`).
 - Wraps common `nvim_*` API calls:
-  - `nvim_open_win` / `nvim_set_current_buf` — open files
-  - `nvim_set_current_line` — jump to line
-  - `nvim_setqflist` — update quickfix list
+  - `openFile` (`:e` via `nvim_exec_lua`) — open files
+  - `setCursor` (`nvim_win_set_cursor`) — jump to line
+  - `updateEditsBuffer` — push the `pi://edits` entries into Neovim's Lua module
   - `nvim_exec_lua` — execute Lua in Neovim (used for injection, custom commands)
-  - `nvim_buf_get_lines` / `nvim_buf_set_lines` — buffer manipulation
-- Uses a minimal msgpack encoder/decoder (or `msgpack-lite` dependency).
+  - `reloadFile` — reload unmodified buffers after the agent edits a file
+- Consumes the socket with `@msgpack/msgpack`'s streaming `decodeMultiStream`.
 
 ### 3. Unix Socket Server (`src/nvim-server.ts`)
 
@@ -123,10 +123,10 @@ Registers:
 ### 4. File Tracker (`src/file-tracker.ts`)
 
 - In-memory set of `{path, toolName, timestamp}` entries.
-- On `session_start`: scans `ctx.sessionManager.getEntries()` for `write`/`edit` tool calls, rebuilds list.
-- On `tool_call` (write/edit with path): adds entry, pushes updated quickfix to Neovim.
-- Formats quickfix entries: `path | tool | timestamp` with `lnum:1, col:1`.
-- Exports `getQuickfixList(): QuickfixEntry[]` for push to Neovim.
+- On `session_start`: scans `ctx.sessionManager.getEntries()` for `write`/`edit` tool calls (reading each tool-call block's `arguments`), rebuilds list.
+- On `tool_call` (write/edit with path): adds entry, pushes the updated edits buffer to Neovim.
+- Formats edits entries: `path | tool | timestamp` with `lnum:1, col:1`.
+- Exports `toEditsEntries(): EditsEntry[]` for push to Neovim.
 
 ### 5. Neovim Lifecycle (`src/nvim-lifecycle.ts`)
 
@@ -169,19 +169,20 @@ end
 function M.setup(opts)
   -- opts.socket_path: path to pi's Unix socket
   -- Connect socket, attach BufWritePost autocmd for edit reporting
-  -- Define user commands: :PiPrompt, :PiSendSelection
-  -- Setup quickfix integration (custom qf title, mappings)
+  -- Define user commands: :PiPrompt, :PiSendSelection, :PiEdits, :PiStatus
+  -- Manage the pi://edits scratch buffer (content, keymaps)
 end
 ```
 
 **Autocmds:**
 - `BufWritePost *` — Reports saved buffer diffs to pi.
 - `VimLeave` — Sends `pi_exit` notification to pi before Neovim terminates.
-- `TextChangedI` (debounced) — Optional live edit tracking.
 
-**Quickfix mappings (buffer-local):**
-- `Enter` — Open file under cursor (built-in quickfix behavior).
-- `d` — Open `:vertical diffsplit` showing `git diff HEAD` for the file under cursor. Falls back to diff against empty buffer if not in a git repo. Mapped when `setqflist` is called via an `ftplugin`-style hook on the qf buffer.
+**Edits-buffer mappings (buffer-local on `pi://edits`):**
+- `Enter` — Open the file under cursor.
+- `d` — Open `:vertical diffsplit` showing `git diff HEAD` for the file under cursor. Falls back to diff against empty buffer if not in a git repo.
+- `r` — Request a refresh from pi.
+- `q` — Close the edits window.
 
 **User commands in Neovim:**
 - `:PiPrompt <text>` — Send a prompt to pi.
@@ -275,13 +276,13 @@ The buffer name `pi://edits` distinguishes it from file-backed buffers.
    └─ Connect msgpack-RPC client
    └─ Start Unix socket server
    └─ Inject lua/pi-nvim.lua (includes VimLeave autocmd for exit detection)
-   └─ Push quickfix list with already-modified files
+   └─ Push edits buffer with already-modified files
    └─ Open requested files
    └─ Mark as "connected"
 
 3. During coding (Neovim connected)
    └─ User can freely switch between pi and nvim
-   └─ Model calls write/edit → file tracker updates → push quickfix
+   └─ Model calls write/edit → file tracker updates → push edits buffer
    └─ User edits in Neovim → BufWritePost fires → Lua sends diff to pi
    └─ Pi receives edit → may incorporate into context
    └─ User runs :PiPrompt → sends prompt to pi → pi processes it
