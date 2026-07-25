@@ -112,6 +112,17 @@ async function main() {
     assert("remaining file is b.txt", tracker.getEntries()[0].path.endsWith("b.txt"));
     assert("removing an untracked path is a no-op", tracker.applyGitDelta([], ["/nope"]) === false);
 
+    // ── non-git directory → snapshot returns null (graceful fallback) ─
+    const nonGit = mkdtempSync(join(tmpdir(), "pi-nongit-"));
+    try {
+      writeFileSync(join(nonGit, "c.txt"), "not tracked by git\n");
+      const snap = await git.snapshot(nonGit);
+      assert("snapshot returns null outside a git repo", snap === null,
+        snap ? `got ${snap.files.size} files` : "null");
+    } finally {
+      rmSync(nonGit, { recursive: true, force: true });
+    }
+
     console.log(`\n── Results: ${passed} passed, ${failed} failed ──`);
   } finally {
     rmSync(dir, { recursive: true, force: true });

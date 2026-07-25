@@ -34,7 +34,11 @@ export default function (pi: ExtensionAPI) {
   // ── State ──────────────────────────────────────────────────────────
   const lifecycle = createNvimLifecycle(pi, luaDir);
   const fileTracker = createFileTracker(lifecycle);
-  const gitWatcher = createGitWatcher(pi.exec.bind(pi));
+  // The git backstop is optional: it needs pi.exec, and it no-ops in projects
+  // that aren't git repos. When either is unavailable the extension falls back
+  // to the write/edit tool hooks alone.
+  const gitWatcher =
+    typeof pi.exec === "function" ? createGitWatcher(pi.exec.bind(pi)) : null;
   // Working-tree signature captured at turn_start, compared at turn_end to
   // attribute file changes to the turn (backstop for non-write/edit changes).
   let turnBaseline: Promise<GitSnapshot | null> | null = null;
@@ -181,32 +185,36 @@ export default function (pi: ExtensionAPI) {
   // files that went back to matching HEAD are pruned (reverts). Bracketing
   // per-turn keeps the attribution window small, so a user editing files
   // mid-turn is the only (unlikely) source of false positives.
-  pi.on("turn_start", (_event, ctx) => {
-    turnBaseline = gitWatcher.snapshot(ctx.cwd).catch(() => null);
-  });
+  if (gitWatcher) {
+    pi.on("turn_start", (_event, ctx) => {
+      turnBaseline = gitWatcher.snapshot(ctx.cwd).catch(() => null);
+    });
 
-  pi.on("turn_end", async (event, ctx) => {
-    const baseline = turnBaseline;
-    turnBaseline = null;
-    // Nothing ran that could touch files — skip the git work entirely.
-    if (!baseline || event.toolResults.length === 0) return;
+    pi.on("turn_end", async (event, ctx) => {
+      const baseline = turnBaseline;
+      turnBaseline = null;
+      // Nothing ran that could touch files — skip the git work entirely.
+      if (!baseline || event.toolResults.length === 0) return;
 
-    const [before, after] = await Promise.all([
-      baseline,
-      gitWatcher.snapshot(ctx.cwd).catch(() => null),
-    ]);
-    if (!before || !after) return; // not a git repo, or a git error
+      const [before, after] = await Promise.all([
+        baseline,
+        gitWatcher.snapshot(ctx.cwd).catch(() => null),
+      ]);
+      // Not a git repo (or a transient git error): fall back to the write/edit
+      // hooks, which have already recorded this turn's tracked files.
+      if (!before || !after) return;
 
-    const { changed, reverted } = gitWatcher.delta(before, after);
-    if (!fileTracker.applyGitDelta(changed, reverted)) return;
+      const { changed, reverted } = gitWatcher.delta(before, after);
+      if (!fileTracker.applyGitDelta(changed, reverted)) return;
 
-    // Reflect on-disk state in Neovim: reload changed files (bash edits aren't
-    // reloaded by the write/edit path) and reverted ones.
-    for (const p of [...changed, ...reverted]) {
-      lifecycle.reloadFile(p).catch(() => {});
-    }
-    await fileTracker.pushToNeovim().catch(() => {});
-  });
+      // Reflect on-disk state in Neovim: reload changed files (bash edits aren't
+      // reloaded by the write/edit path) and reverted ones.
+      for (const p of [...changed, ...reverted]) {
+        lifecycle.reloadFile(p).catch(() => {});
+      }
+      await fileTracker.pushToNeovim().catch(() => {});
+    });
+  }
 
   pi.on("session_shutdown", async () => {
     await lifecycle.shutdown();
