@@ -18,6 +18,8 @@ export interface PiEditCommand extends NvimCommand {
   cmd: "pi_edit";
   file: string;
   diff: string;
+  added?: number;
+  removed?: number;
 }
 
 export interface PiOpenFileCommand extends NvimCommand {
@@ -29,6 +31,9 @@ export interface PiSelectCommand extends NvimCommand {
   cmd: "pi_select";
   file: string;
   lines: string;
+  line_start?: number;
+  line_end?: number;
+  prompt?: string;
 }
 
 export interface PiExitCommand extends NvimCommand {

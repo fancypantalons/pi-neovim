@@ -1,6 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { NeovimClient } from "./neovim-client";
-import { NvimServer, NvimCommand } from "./nvim-server";
+import {
+  NvimServer,
+  NvimCommand,
+  PiPromptCommand,
+  PiEditCommand,
+  PiSelectCommand,
+} from "./nvim-server";
 import type { EditsEntry } from "./types";
 import { existsSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
@@ -272,11 +278,13 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
       case "pi_exit":
         handleDisconnect("user_closed");
         break;
-      case "pi_prompt":
-        pi.sendUserMessage(cmd.text as string, { deliverAs: "followUp" });
+      case "pi_prompt": {
+        const p = cmd as PiPromptCommand;
+        pi.sendUserMessage(p.text, { deliverAs: "followUp" });
         break;
+      }
       case "pi_edit": {
-        const e = cmd as { cmd: "pi_edit"; file: string; diff: string; added?: number; removed?: number };
+        const e = cmd as PiEditCommand;
         const summary = e.added !== undefined
           ? `User saved ${e.file} (+${e.added}/-${e.removed} lines)`
           : `User saved ${e.file}`;
@@ -288,14 +296,7 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
         break;
       }
       case "pi_select": {
-        const s = cmd as {
-          cmd: "pi_select";
-          file: string;
-          lines: string;
-          line_start?: number;
-          line_end?: number;
-          prompt?: string;
-        };
+        const s = cmd as PiSelectCommand;
         const lineRange = (s.line_start !== undefined && s.line_end !== undefined)
           ? ` (lines ${s.line_start}-${s.line_end})`
           : "";
