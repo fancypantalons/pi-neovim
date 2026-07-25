@@ -68,10 +68,13 @@ pi-neovim/
 ├── DESIGN.md              # This file
 ├── src/
 │   ├── index.ts           # Extension entry point
-│   ├── neovim-client.ts   # msgpack-RPC client (pi → nvim)
+│   ├── neovim-client.ts   # msgpack-RPC transport, protocol-only (pi → nvim)
+│   ├── nvim-editor.ts     # pi-nvim domain ops over the client (edits buffer, openFile, Lua inject/setup)
 │   ├── nvim-server.ts     # Unix socket server (nvim → pi)
+│   ├── nvim-backend.ts    # Mode strategy: tmux (spawn pane) vs embedded ($NVIM host)
 │   ├── file-tracker.ts    # Modified file tracking + edits buffer
-│   └── nvim-lifecycle.ts  # Spawn, connect, inject Lua, cleanup
+│   ├── types.ts           # Shared types (EditsEntry)
+│   └── nvim-lifecycle.ts  # Orchestrates backend + editor + reverse server
 ├── lua/
 │   └── pi-nvim.lua        # Lua support module (injected into Neovim)
 └── skills/ (optional)
@@ -97,16 +100,20 @@ Registers:
   - `session_shutdown`: close Neovim and clean up sockets.
   - `tool_result`: hook for reporting nvim-sourced diffs back to the model.
 
-### 2. Neovim RPC Client (`src/neovim-client.ts`)
+### 2. Neovim RPC Client (`src/neovim-client.ts`) + Editor (`src/nvim-editor.ts`)
 
-- Connects to Neovim's msgpack-RPC socket (`--listen /tmp/pi-nvim-<PID>`).
-- Wraps common `nvim_*` API calls:
-  - `openFile` (`:e` via `nvim_exec_lua`) — open files
-  - `setCursor` (`nvim_win_set_cursor`) — jump to line
-  - `updateEditsBuffer` — push the `pi://edits` entries into Neovim's Lua module
-  - `nvim_exec_lua` — execute Lua in Neovim (used for injection, custom commands)
-  - `reloadFile` — reload unmodified buffers after the agent edits a file
+`NeovimClient` is a protocol-only msgpack-RPC transport:
+- Connects to Neovim's msgpack-RPC socket (`--listen /tmp/pi-nvim-<PID>`, or the host `$NVIM` socket in embedded mode).
+- Generic primitives: `notify`, `request`, `call`, `execLua`, `command`, `ping`.
 - Consumes the socket with `@msgpack/msgpack`'s streaming `decodeMultiStream`.
+- Knows nothing about pi-nvim.
+
+`NvimEditor` wraps a client and holds the pi-nvim domain operations:
+- `injectModule(luaDir)` / `setup(backSocket, pid)` — load and initialise the Lua module.
+- `openFile` / `setCursor` — open a file, jump to a line.
+- `updateEditsBuffer(entries)` — push `pi://edits` content.
+- `reloadFile` — reload unmodified buffers after the agent edits a file.
+- Passes values to Lua as `nvim_exec_lua` arguments (no source interpolation / escaping).
 
 ### 3. Unix Socket Server (`src/nvim-server.ts`)
 
@@ -128,24 +135,26 @@ Registers:
 - Formats edits entries: `path | tool | timestamp` with `lnum:1, col:1`.
 - Exports `toEditsEntries(): EditsEntry[]` for push to Neovim.
 
-### 5. Neovim Lifecycle (`src/nvim-lifecycle.ts`)
+### 5. Neovim Lifecycle (`src/nvim-lifecycle.ts`) + Backend (`src/nvim-backend.ts`)
 
-Orchestrates Neovim instance management. Detects operating mode at startup via `$NVIM`:
+The lifecycle orchestrates a single, mode-agnostic setup path and delegates
+the mode-specific parts to an `NvimBackend` strategy (chosen at startup via
+`$NVIM`):
 
-**Tmux mode** (`$NVIM` not set):
-- `spawn()` — `tmux split-window -h -l 50% nvim --listen /tmp/pi-nvim-<PID>`. Creates the right pane and launches Neovim.
-- `waitForReady()` — Polls the msgpack-RPC socket until Neovim responds.
-- `shutdown()` — Calls `nvim_command("qa!")`, kills the tmux pane, cleans up sockets.
+**Common path (lifecycle):**
+- `backend.acquireSocket()` — get the RPC socket to connect to.
+- `editor.connect()` → `editor.injectModule()` → start the reverse server → `editor.setup()`.
+- `handleDisconnect(reason)` — Called when Neovim exits (gracefully via `pi_exit` or unexpectedly). Updates state, cleans up.
+- `cleanup()` — disconnects, stops the server, and unlinks `backend.ownedSockets()`.
 
-**Embedded mode** (`$NVIM` is set):
-- `open()` — Connects directly to the `$NVIM` socket. No tmux commands, no spawning.
-- `shutdown()` — Disconnects RPC and stops the reverse server. Does NOT kill the host Neovim or any tmux pane.
+**`NvimBackend` (strategy):**
 
-**Both modes (common):**
-- `connect()` — Establishes msgpack-RPC client connection.
-- `injectLua()` — Reads `lua/pi-nvim.lua`, sends via `nvim_exec_lua` to Neovim.
-- `startServer()` — Starts the Unix socket server for reverse commands.
-- `handleDisconnect(reason)` — Called when Neovim exits (either gracefully via `pi_exit` or unexpectedly). Updates state, cleans up.
+| Method | Tmux mode | Embedded mode |
+|--------|-----------|---------------|
+| `acquireSocket()` | `tmux split-window -h -l 50% nvim --listen /tmp/pi-nvim-<PID>`, wait for the socket | return the host `$NVIM` socket (no spawn) |
+| `teardown(editor)` | `qa!` the spawned Neovim, kill the tmux pane | no-op — never kill the host |
+| `ownedSockets()` | `--listen` socket + back-channel socket | back-channel socket only |
+| `connectionLabel()` | "right tmux pane" | "host Neovim (\<socket\>)" |
 
 ### 6. Lua Support Module (`lua/pi-nvim.lua`)
 
