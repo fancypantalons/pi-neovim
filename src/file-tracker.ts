@@ -1,5 +1,6 @@
 import { resolve as resolvePath } from "node:path";
-import type { ExtensionAPI, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import type { ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import type { EditsEntry } from "./types";
 
 export interface TrackedFile {
   path: string;
@@ -20,16 +21,6 @@ export function createFileTracker(
 ) {
   const files = new Map<string, TrackedFile>();
 
-  /**
-   * An edits-buffer entry formatted for the Neovim Lua module.
-   */
-  interface EditsEntry {
-    filename: string;
-    lnum: number;
-    col: number;
-    text: string;
-  }
-
   function getEntries(): TrackedFile[] {
     return Array.from(files.values()).sort(
       (a, b) => b.timestamp - a.timestamp,
@@ -37,7 +28,7 @@ export function createFileTracker(
   }
 
   function toEditsEntries(): EditsEntry[] {
-    return getEntries().map((f, i) => ({
+    return getEntries().map((f) => ({
       filename: f.path,
       lnum: 1,
       col: 1,
@@ -85,7 +76,7 @@ export function createFileTracker(
    * Called when a write/edit tool result is received.
    * Confirms the file was actually written and pushes the quickfix.
    */
-  function onToolResult(toolName: string, event: ToolResultEvent) {
+  function onToolResult(_toolName: string, event: ToolResultEvent) {
     // Push the updated quickfix list to Neovim if connected
     pushToNeovim().catch(() => {});
 

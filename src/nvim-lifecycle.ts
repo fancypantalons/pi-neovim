@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { NeovimClient } from "./neovim-client";
 import { NvimServer, NvimCommand } from "./nvim-server";
+import type { EditsEntry } from "./types";
 import { existsSync, unlinkSync } from "node:fs";
 import { execSync } from "node:child_process";
 
@@ -15,14 +16,9 @@ function nvimBackSocketPath(): string {
   return `${SOCKET_PREFIX}-back-${PID}.sock`;
 }
 
-export type ConnectionStatus = "disconnected" | "connected";
+export type { EditsEntry };
 
-export interface EditsEntry {
-  filename: string;
-  lnum: number;
-  col: number;
-  text: string;
-}
+export type ConnectionStatus = "disconnected" | "connected";
 
 /**
  * Operating mode of the extension.
@@ -79,7 +75,7 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
     files?: string[];
     focus_file?: string;
     focus_line?: number;
-  }): Promise<{ content: Array<{ type: string; text: string }>; details: Record<string, unknown> }> {
+  }): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
     // ── helper: open files/focus whether first connection or subsequent call ──
     async function openRequestedFiles(p: typeof params) {
       if (!client?.isConnected) return;

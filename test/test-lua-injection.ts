@@ -12,7 +12,7 @@
  * 4. Reports success or the exact error message
  */
 
-import { spawn, ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync, existsSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { NeovimClient } from "../src/neovim-client";
