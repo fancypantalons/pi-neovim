@@ -69,6 +69,12 @@ export default function (pi: ExtensionAPI) {
       "When pi.dev runs inside a Neovim terminal: connects to the host Neovim directly. " +
       "Call this when you want the user to see, browse, or edit code in a full editor. " +
       "Idempotent: if Neovim is already connected, returns its current status.",
+    promptSnippet:
+      "Open Neovim so the user can see, browse, and diff the files you have modified",
+    promptGuidelines: [
+      "Call open_in_nvim when the user asks to see, browse, or review the files you changed, " +
+        "and early in multi-file work so they can follow along. It is idempotent and cheap to call.",
+    ],
     parameters: Type.Object({
       files: Type.Optional(
         Type.Array(Type.String(), {
@@ -80,6 +86,14 @@ export default function (pi: ExtensionAPI) {
       ),
       focus_line: Type.Optional(
         Type.Number({ description: "Line number to jump to in focus_file" }),
+      ),
+      cwd: Type.Optional(
+        Type.String({
+          description:
+            "Directory to open Neovim in — set this to the git worktree you are working in " +
+            "when it differs from your own working directory. Ignored when connecting to an " +
+            "already-running Neovim.",
+        }),
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
@@ -93,6 +107,12 @@ export default function (pi: ExtensionAPI) {
     label: "Neovim Edits",
     description:
       "Query or refresh the pi-edits scratch buffer showing agent-modified files in Neovim.",
+    promptSnippet:
+      "List the files modified this session, or push a refresh to Neovim's edits buffer",
+    promptGuidelines: [
+      "Use nvim_quickfix with action \"list\" to recall which files you have modified this session. " +
+        "The Neovim edits buffer refreshes automatically after write and edit, so \"refresh\" is rarely needed.",
+    ],
     parameters: Type.Object({
       action: Type.String({
         description: '"list" to see current modified files, "refresh" to push updates to Neovim',
@@ -185,9 +205,24 @@ export default function (pi: ExtensionAPI) {
   // files that went back to matching HEAD are pruned (reverts). Bracketing
   // per-turn keeps the attribution window small, so a user editing files
   // mid-turn is the only (unlikely) source of false positives.
+  //
+  // Which tree(s) to watch: pi's own cwd, plus the worktree Neovim is open in.
+  // Linked worktrees are mutually invisible to `git status`, so if the agent
+  // works in a worktree that isn't ctx.cwd, watching ctx.cwd alone detects
+  // nothing at all. We watch both rather than swapping to Neovim's cwd, so
+  // that fixing this case doesn't create the mirror-image blind spot for
+  // agent changes in pi's own tree. Same-directory (the common case) dedupes
+  // to a single scan inside snapshot().
+  async function watchRoots(ctxCwd: string): Promise<string[]> {
+    const nvimCwd = await lifecycle.getNvimCwd().catch(() => null);
+    return nvimCwd && nvimCwd !== ctxCwd ? [ctxCwd, nvimCwd] : [ctxCwd];
+  }
+
   if (gitWatcher) {
     pi.on("turn_start", (_event, ctx) => {
-      turnBaseline = gitWatcher.snapshot(ctx.cwd).catch(() => null);
+      turnBaseline = watchRoots(ctx.cwd)
+        .then((roots) => gitWatcher.snapshot(roots))
+        .catch(() => null);
     });
 
     pi.on("turn_end", async (event, ctx) => {
@@ -198,7 +233,9 @@ export default function (pi: ExtensionAPI) {
 
       const [before, after] = await Promise.all([
         baseline,
-        gitWatcher.snapshot(ctx.cwd).catch(() => null),
+        watchRoots(ctx.cwd)
+          .then((roots) => gitWatcher.snapshot(roots))
+          .catch(() => null),
       ]);
       // Not a git repo (or a transient git error): fall back to the write/edit
       // hooks, which have already recorded this turn's tracked files.

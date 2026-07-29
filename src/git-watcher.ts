@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 /**
  * Minimal shape of pi's `exec` (or any exec backend). Kept structural so the
@@ -20,7 +20,14 @@ const DELETED = "\0deleted";
  * exactly the signal we want for the edits buffer.
  */
 export interface GitSnapshot {
-  root: string;
+  /**
+   * The distinct repo roots this snapshot covers. Usually one, but linked git
+   * worktrees are mutually invisible — `git status` in worktree A reports
+   * nothing about dirty files in sibling worktree B, even though they share a
+   * .git dir. So when the agent works in a different worktree than the one
+   * Neovim sits in, a single root is a blind spot and we scan several.
+   */
+  roots: string[];
   files: Map<string, string>;
 }
 
@@ -52,13 +59,38 @@ export function createGitWatcher(exec: ExecFn) {
   }
 
   /**
-   * Snapshot the dirty working-tree state as absolute-path -> signature.
-   * Returns null when not inside a git repo (feature disables gracefully).
+   * Snapshot the dirty working-tree state as absolute-path -> signature,
+   * across one or more directories.
+   *
+   * Each directory is resolved to its repo root and deduplicated, so passing
+   * two paths in the same worktree costs one scan. Returns null only when
+   * *no* directory resolved to a repo (feature disables gracefully); roots
+   * that fail individually are skipped so one bad path can't blind the rest.
    */
-  async function snapshot(cwd: string): Promise<GitSnapshot | null> {
-    const root = await repoRoot(cwd);
-    if (!root) return null;
+  async function snapshot(cwds: string | string[]): Promise<GitSnapshot | null> {
+    const requested = typeof cwds === "string" ? [cwds] : cwds;
 
+    const roots: string[] = [];
+    for (const cwd of requested) {
+      const root = await repoRoot(cwd);
+      if (root && !roots.includes(root)) roots.push(root);
+    }
+    if (roots.length === 0) return null;
+
+    const merged = new Map<string, string>();
+    for (const root of roots) {
+      const files = await snapshotRoot(root);
+      if (files) for (const [abs, sig] of files) merged.set(abs, sig);
+    }
+
+    return { roots, files: merged };
+  }
+
+  /**
+   * Scan a single resolved repo root. Returns null on any git failure, which
+   * the caller treats as "this root contributed nothing".
+   */
+  async function snapshotRoot(root: string): Promise<Map<string, string> | null> {
     let statusOut: string;
     try {
       const res = await exec(
@@ -109,7 +141,15 @@ export function createGitWatcher(exec: ExecFn) {
       }
     }
 
-    return { root, files };
+    return files;
+  }
+
+  /**
+   * True if `path` lies under any of `roots` — i.e. the snapshot actually
+   * scanned the tree containing it. Used to scope revert detection.
+   */
+  function isCovered(roots: string[], path: string): boolean {
+    return roots.some((root) => path === root || path.startsWith(root + sep));
   }
 
   /** Compare two snapshots and classify per-file transitions. */
@@ -129,9 +169,12 @@ export function createGitWatcher(exec: ExecFn) {
     }
 
     // Files that were dirty before and are absent now became clean (revert or
-    // commit) — remove them.
+    // commit) — remove them. Absence only means "clean" for roots the *after*
+    // snapshot actually scanned: if a root went away between snapshots (Neovim
+    // closed, worktree removed), its files are unknown, not reverted. Without
+    // this guard they'd all be silently dropped from the edits buffer.
     for (const path of before.files.keys()) {
-      if (!after.files.has(path)) reverted.push(path);
+      if (!after.files.has(path) && isCovered(after.roots, path)) reverted.push(path);
     }
 
     return { changed, reverted };

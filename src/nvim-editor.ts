@@ -75,6 +75,19 @@ export class NvimEditor {
     );
   }
 
+  /**
+   * The connected Neovim's *global* working directory.
+   *
+   * Uses `getcwd(-1, -1)` rather than bare `getcwd()`: the latter returns the
+   * current window's directory, which swings around under `:lcd`/`:tcd` and
+   * would make the git backstop's anchor depend on which split happens to be
+   * focused. The global cwd is what identifies the worktree the user opened.
+   */
+  async getCwd(): Promise<string | null> {
+    const cwd = await this.client.call("nvim_call_function", ["getcwd", [-1, -1]], 5_000);
+    return typeof cwd === "string" && cwd !== "" ? cwd : null;
+  }
+
   /** Jump to a specific line in the current buffer. */
   async setCursor(line: number, col: number = 0): Promise<void> {
     await this.client.call("nvim_win_set_cursor", [0, [line, col]]);

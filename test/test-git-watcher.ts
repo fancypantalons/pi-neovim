@@ -112,6 +112,49 @@ async function main() {
     assert("remaining file is b.txt", tracker.getEntries()[0].path.endsWith("b.txt"));
     assert("removing an untracked path is a no-op", tracker.applyGitDelta([], ["/nope"]) === false);
 
+    // ── linked worktree: the multi-root case ─────────────────────────
+    // Sibling worktrees share a .git dir but are mutually invisible to
+    // `git status`, so a watcher anchored only at `dir` sees nothing of a
+    // change made in the worktree. This is the bug multi-root snapshots fix.
+    const wtDir = join(dir, "..", `${dir.split("/").pop()}-wt`);
+    await exec("git", ["-C", dir, "worktree", "add", "-q", wtDir, "-b", "feat"]);
+    try {
+      const wtFile = join(wtDir, "a.txt");
+      const wtBefore = (await git.snapshot([dir, wtDir]))!;
+      writeFileSync(wtFile, "changed in the worktree\n");
+
+      const mainOnly = (await git.snapshot(dir))!;
+      assert(
+        "single-root snapshot at main is blind to worktree changes",
+        !has([...mainOnly.files.keys()], "-wt/a.txt"),
+        [...mainOnly.files.keys()].join(","),
+      );
+
+      const wtAfter = (await git.snapshot([dir, wtDir]))!;
+      assert("multi-root snapshot covers both roots", wtAfter.roots.length === 2,
+        wtAfter.roots.join(","));
+      const dWt = git.delta(wtBefore, wtAfter);
+      assert("change in the linked worktree is detected", has(dWt.changed, "-wt/a.txt"),
+        dWt.changed.join(","));
+
+      // Dropping a root (Neovim closed / worktree gone) must NOT be read as a
+      // revert of everything under it — those files are unknown, not clean.
+      const shrunk = (await git.snapshot(dir))!;
+      const dShrunk = git.delta(wtAfter, shrunk);
+      assert(
+        "files under a no-longer-scanned root are not falsely reverted",
+        !has(dShrunk.reverted, "-wt/a.txt"),
+        dShrunk.reverted.join(","),
+      );
+
+      // Same directory twice must dedupe to a single root, not double-scan.
+      const dedup = (await git.snapshot([dir, dir]))!;
+      assert("duplicate roots are deduplicated", dedup.roots.length === 1,
+        dedup.roots.join(","));
+    } finally {
+      await exec("git", ["-C", dir, "worktree", "remove", "--force", wtDir]);
+    }
+
     // ── non-git directory → snapshot returns null (graceful fallback) ─
     const nonGit = mkdtempSync(join(tmpdir(), "pi-nongit-"));
     try {

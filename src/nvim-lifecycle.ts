@@ -28,6 +28,12 @@ interface OpenParams {
   files?: string[];
   focus_file?: string;
   focus_line?: number;
+  /**
+   * Working directory for a newly spawned Neovim — typically the git worktree
+   * the agent is working in. Ignored in embedded mode (the host Neovim already
+   * exists and we don't move it). See {@link getNvimCwd} for the read side.
+   */
+  cwd?: string;
 }
 
 interface OpenResult {
@@ -101,7 +107,7 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
 
     let nvimSocket: string;
     try {
-      nvimSocket = await backend.acquireSocket();
+      nvimSocket = await backend.acquireSocket(params.cwd);
     } catch (err: any) {
       return errorResult(`Failed to start Neovim: ${err.message || err}`, err);
     }
@@ -153,6 +159,22 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
         back_socket: backSocket,
       },
     };
+  }
+
+  /**
+   * The connected Neovim's global working directory, or null if not connected
+   * (or the query fails). This is the authoritative answer to "which worktree
+   * is the user looking at" — better than the spawn-time `cwd` param, because
+   * it also reflects a manual `:cd` and works in embedded mode, where we never
+   * chose the directory at all.
+   */
+  async function getNvimCwd(): Promise<string | null> {
+    if (!editor?.isConnected) return null;
+    try {
+      return await editor.getCwd();
+    } catch {
+      return null;
+    }
   }
 
   /** Push the edits list to Neovim's scratch buffer. */
@@ -245,6 +267,7 @@ export function createNvimLifecycle(pi: ExtensionAPI, luaDir: string) {
   return {
     open,
     pushEditsBuffer,
+    getNvimCwd,
     reloadFile,
     shutdown,
     handleDisconnect,

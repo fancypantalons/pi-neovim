@@ -39,8 +39,12 @@ export interface NvimBackend {
   /**
    * Return the RPC socket path to connect to, spawning Neovim first if this
    * backend owns the instance. Throws on failure (spawn error / timeout).
+   *
+   * `cwd` requests the working directory for a *newly spawned* Neovim (e.g. a
+   * specific git worktree). Backends that attach to an existing instance
+   * ignore it — we don't relocate the user's editor out from under them.
    */
-  acquireSocket(): Promise<string>;
+  acquireSocket(cwd?: string): Promise<string>;
   /** Tear down anything this backend spawned. Never touches a host Neovim. */
   teardown(editor: NvimEditor | null): Promise<void>;
   /** Socket files this backend owns and should unlink on cleanup. */
@@ -66,10 +70,14 @@ export function createTmuxBackend(): NvimBackend {
   return {
     mode: "tmux",
 
-    async acquireSocket() {
+    async acquireSocket(cwd) {
       const nvimSocket = nvimSocketPath();
       const targetPane = process.env.TMUX_PANE || "";
-      const spawnCmd = `tmux split-window -h -l 50% ${targetPane ? "-t " + targetPane : ""} -P -F '#{pane_id}' nvim --listen ${nvimSocket}`;
+      // -c sets the new pane's working directory. Shell-quoted because this
+      // command string goes through execSync and `cwd` originates from a tool
+      // parameter (i.e. model-supplied).
+      const startDir = cwd ? `-c ${shellQuote(cwd)} ` : "";
+      const spawnCmd = `tmux split-window -h -l 50% ${targetPane ? "-t " + targetPane : ""} ${startDir}-P -F '#{pane_id}' nvim --listen ${nvimSocket}`;
 
       tmuxPaneId = execSync(spawnCmd, { encoding: "utf-8", timeout: 5000 }).trim();
       await waitForSocket(nvimSocket, 5000);
@@ -135,6 +143,14 @@ export function createEmbeddedBackend(hostSocket: string | null): NvimBackend {
       return `host Neovim (${socket})`;
     },
   };
+}
+
+/**
+ * Wrap a value in single quotes for safe inclusion in a shell command,
+ * escaping any embedded single quotes. `'` becomes `'\''`.
+ */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /** Poll for a Unix socket file to appear. */
